@@ -1,0 +1,530 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Courier New', 'Monaco', 'Menlo', monospace;
+    background: #000000;
+    color: #ffffff;
+    min-height: 100vh;
+    padding: 20px;
+    line-height: 1.6;
+}
+
+/* Page de connexion */
+.login-container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 20px;
+}
+
+.login-box {
+    max-width: 400px;
+    width: 100%;
+    background: #ffffff;
+    color: #000000;
+    border: 2px solid #000000;
+    padding: 40px;
+    box-shadow: 8px 8px 0px #000000;
+}
+
+.login-box header {
+    text-align: center;
+    margin-bottom: 40px;
+    border-bottom: 2px solid #000000;
+    padding-bottom: 20px;
+}
+
+.login-box header h1 {
+    font-size: 2em;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: #000000;
+}
+
+.login-form {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.login-form .form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.login-form label {
+    font-weight: bold;
+    color: #000000;
+    font-size: 0.95em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.login-form input {
+    padding: 12px;
+    border: 2px solid #000000;
+    background: #ffffff;
+    color: #000000;
+    font-size: 1em;
+    font-family: 'Courier New', monospace;
+    transition: all 0.2s ease;
+}
+
+.login-form input:focus {
+    outline: none;
+    box-shadow: 4px 4px 0px #000000;
+    transform: translate(-2px, -2px);
+}
+
+.login-form input::placeholder {
+    color: #888888;
+    font-style: italic;
+}
+
+.login-error {
+    padding: 12px;
+    border: 2px solid #000000;
+    background: #000000;
+    color: #ffffff;
+    font-family: 'Courier New', monospace;
+    text-align: center;
+    display: none;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    box-shadow: 4px 4px 0px #000000;
+}
+
+.login-error.show {
+    display: block;
+}
+
+.login-error::before {
+    content: '[ERROR] ';
+    font-weight: bold;
+}
+
+.container {
+    max-width: 800px;
+    margin: 0 auto;
+    background: #ffffff;
+    color: #000000;
+    border: 2px solid #000000;
+    padding: 40px;
+    box-shadow: 8px 8px 0px #000000;
+}
+
+header {
+    text-align: center;
+    margin-bottom: 40px;
+    border-bottom: 2px solid #000000;
+    padding-bottom: 20px;
+}
+
+header h1 {
+    font-size: 2em;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: #000000;
+}
+
+.scanner-section {
+    margin-bottom: 30px;
+}
+
+.scanner-container {
+    position: relative;
+    width: 100%;
+    max-width: 500px;
+    margin: 0 auto 20px;
+    border: 2px solid #000000;
+    overflow: hidden;
+    background: #000000;
+}
+
+#reader {
+    width: 100%;
+    min-height: 400px;
+}
+
+.controls {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.btn {
+    padding: 12px 24px;
+    border: 2px solid #000000;
+    background: #ffffff;
+    color: #000000;
+    font-size: 1em;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-family: 'Courier New', monospace;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    box-shadow: 4px 4px 0px #000000;
+}
+
+.btn:hover {
+    transform: translate(-2px, -2px);
+    box-shadow: 6px 6px 0px #000000;
+}
+
+.btn:active {
+    transform: translate(2px, 2px);
+    box-shadow: 2px 2px 0px #000000;
+}
+
+.btn-primary {
+    background: #000000;
+    color: #ffffff;
+}
+
+.btn-primary:hover {
+    background: #000000;
+    color: #ffffff;
+}
+
+.btn-secondary {
+    background: #ffffff;
+    color: #000000;
+}
+
+.btn-success {
+    background: #000000;
+    color: #ffffff;
+}
+
+.btn-outline {
+    background: #ffffff;
+    color: #000000;
+}
+
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: 2px 2px 0px #000000;
+}
+
+.manual-input-section {
+    background: #000000;
+    color: #ffffff;
+    padding: 20px;
+    border: 2px solid #000000;
+    margin-bottom: 30px;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+}
+
+.manual-input-section::before {
+    content: '$ ';
+    color: #ffffff;
+    font-weight: bold;
+}
+
+#manualCodeInput {
+    flex: 1;
+    padding: 12px;
+    border: 2px solid #ffffff;
+    background: #000000;
+    color: #ffffff;
+    font-size: 1em;
+    font-family: 'Courier New', monospace;
+}
+
+#manualCodeInput:focus {
+    outline: none;
+    border-color: #ffffff;
+    box-shadow: 0 0 0 2px #ffffff;
+}
+
+#manualCodeInput::placeholder {
+    color: #888888;
+}
+
+.product-form-section {
+    margin-bottom: 30px;
+}
+
+.product-form-section h2 {
+    color: #000000;
+    margin-bottom: 24px;
+    text-align: center;
+    font-size: 1.5em;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    border-bottom: 2px solid #000000;
+    padding-bottom: 10px;
+}
+
+.product-image-container {
+    width: 100%;
+    max-width: 300px;
+    margin: 0 auto 30px;
+    aspect-ratio: 1;
+    border: 2px solid #000000;
+    overflow: hidden;
+    background: #ffffff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 4px 4px 0px #000000;
+    position: relative;
+}
+
+.product-image-container img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: none;
+}
+
+.image-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    color: #000000;
+    font-size: 0.9em;
+    font-family: 'Courier New', monospace;
+    text-align: center;
+    padding: 20px;
+}
+
+.image-placeholder.hidden {
+    display: none;
+}
+
+.product-image-container img.show {
+    display: block;
+}
+
+#productForm {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.form-group label {
+    font-weight: bold;
+    color: #000000;
+    font-size: 0.95em;
+    font-family: 'Courier New', monospace;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.required {
+    color: #000000;
+    font-weight: bold;
+}
+
+.form-group input,
+.form-group textarea {
+    padding: 12px;
+    border: 2px solid #000000;
+    background: #ffffff;
+    color: #000000;
+    font-size: 1em;
+    font-family: 'Courier New', monospace;
+    transition: all 0.2s ease;
+}
+
+.form-group input:focus,
+.form-group textarea:focus {
+    outline: none;
+    box-shadow: 4px 4px 0px #000000;
+    transform: translate(-2px, -2px);
+}
+
+.form-group input:invalid:not(:placeholder-shown) {
+    border-color: #000000;
+    box-shadow: 4px 4px 0px #000000;
+}
+
+.form-group textarea {
+    resize: vertical;
+    min-height: 80px;
+}
+
+.form-group input::placeholder,
+.form-group textarea::placeholder {
+    color: #888888;
+    font-style: italic;
+}
+
+.form-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 10px;
+}
+
+.form-actions .btn {
+    flex: 1;
+}
+
+.status-message {
+    margin-top: 20px;
+    padding: 15px;
+    border: 2px solid #000000;
+    text-align: center;
+    font-weight: bold;
+    display: none;
+    font-family: 'Courier New', monospace;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    box-shadow: 4px 4px 0px #000000;
+}
+
+.status-message::before {
+    content: '[';
+}
+
+.status-message::after {
+    content: ']';
+}
+
+.status-message.success {
+    background: #ffffff;
+    color: #000000;
+    border-color: #000000;
+    display: block;
+}
+
+.status-message.error {
+    background: #000000;
+    color: #ffffff;
+    border-color: #000000;
+    display: block;
+}
+
+.status-message.info {
+    background: #ffffff;
+    color: #000000;
+    border-color: #000000;
+    display: block;
+}
+
+.config-section {
+    background: #000000;
+    color: #ffffff;
+    padding: 20px;
+    border: 2px solid #000000;
+    margin-top: 30px;
+}
+
+.config-section h3 {
+    color: #ffffff;
+    margin-bottom: 15px;
+    font-size: 1.1em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-family: 'Courier New', monospace;
+}
+
+.config-section h3::before {
+    content: '> ';
+}
+
+#webhookUrl {
+    width: 100%;
+    padding: 12px;
+    border: 2px solid #ffffff;
+    background: #000000;
+    color: #ffffff;
+    font-size: 1em;
+    font-family: 'Courier New', monospace;
+    margin-bottom: 10px;
+}
+
+#webhookUrl:focus {
+    outline: none;
+    border-color: #ffffff;
+    box-shadow: 0 0 0 2px #ffffff;
+}
+
+#webhookUrl::placeholder {
+    color: #888888;
+}
+
+.webhook-status {
+    margin-top: 10px;
+    padding: 10px;
+    border: 2px solid #ffffff;
+    font-size: 0.9em;
+    display: none;
+    font-family: 'Courier New', monospace;
+}
+
+.webhook-status::before {
+    content: '> ';
+}
+
+.webhook-status.saved {
+    background: #ffffff;
+    color: #000000;
+    border-color: #ffffff;
+    display: block;
+}
+
+@media (max-width: 768px) {
+    .container {
+        padding: 24px;
+    }
+
+    header h1 {
+        font-size: 1.5em;
+    }
+
+    .controls {
+        flex-direction: column;
+    }
+
+    .btn {
+        width: 100%;
+    }
+
+    .manual-input-section {
+        flex-direction: column;
+    }
+
+    #manualCodeInput {
+        width: 100%;
+    }
+
+    .form-actions {
+        flex-direction: column;
+    }
+}
+
+/* Effet de terminal cursor */
+@keyframes blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0; }
+}
+
+.manual-input-section::after {
+    content: '_';
+    animation: blink 1s step-end infinite;
+    color: #ffffff;
+}
