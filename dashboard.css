@@ -1,15 +1,53 @@
 /* Styles spécifiques au dashboard - Thème professionnel */
 
+/* Faire remplir toute la fenêtre */
+html, body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+}
+
+body {
+    display: flex;
+    flex-direction: column;
+    padding: 0 !important;
+}
+
+.container {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    width: 100%;
+    max-width: 100% !important;
+    margin: 0 !important;
+    overflow: hidden;
+    padding: 32px;
+    box-sizing: border-box;
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+}
+
 .dashboard-controls {
     display: flex;
     gap: 12px;
-    justify-content: space-between;
+    justify-content: flex-start;
+    align-items: center;
     margin-bottom: 24px;
     flex-wrap: wrap;
+    flex-shrink: 0;
 }
 
 .dashboard-controls a {
     text-decoration: none;
+}
+
+.dashboard-controls .btn {
+    height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .search-section {
@@ -17,6 +55,12 @@
     gap: 12px;
     margin-bottom: 24px;
     align-items: center;
+    flex-shrink: 0;
+}
+
+.search-section .btn {
+    height: 48px;
+    white-space: nowrap;
 }
 
 #searchInput {
@@ -41,12 +85,24 @@
     color: #999;
 }
 
+#searchInput {
+    height: 48px;
+    box-sizing: border-box;
+}
+
+header {
+    flex-shrink: 0;
+    margin-bottom: 24px;
+}
+
 .table-container {
-    overflow-x: auto;
+    flex: 1;
+    overflow: auto;
     border: 1px solid #e5e5e5;
     border-radius: 16px;
     margin-bottom: 24px;
     background: #ffffff;
+    min-height: 0;
 }
 
 table {
@@ -283,7 +339,17 @@ tbody td img {
     justify-content: center;
     align-items: center;
     gap: 24px;
-    margin-top: 24px;
+    margin-top: auto;
+    flex-shrink: 0;
+    padding-top: 24px;
+}
+
+.pagination .btn {
+    height: 48px;
+    min-width: 120px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 #pageInfo {

@@ -74,6 +74,9 @@ function initializeApp() {
     document.getElementById('startScanBtn').addEventListener('click', startScan);
     document.getElementById('stopScanBtn').addEventListener('click', stopScan);
     document.getElementById('manualInputBtn').addEventListener('click', toggleManualInput);
+    document.getElementById('inventoryBtn').addEventListener('click', () => {
+        window.location.href = 'dashboard.html';
+    });
     document.getElementById('submitManualBtn').addEventListener('click', handleManualInput);
     document.getElementById('cancelManualBtn').addEventListener('click', hideManualInput);
     document.getElementById('searchBarcodeBtn').addEventListener('click', handleManualBarcodeSearch);
@@ -101,7 +104,24 @@ async function startScan() {
         }
     } catch (err) {
         console.error("Erreur lors du démarrage du scan:", err);
-        showStatusMessage('Erreur: Impossible d\'accéder à la caméra. Vérifiez les permissions.', 'error');
+        
+        let errorMessage = 'Erreur: Impossible d\'accéder à la caméra.';
+        
+        if (err.name === 'NotAllowedError' || err.message?.includes('NotAllowedError')) {
+            errorMessage = 'Permission refusée. Veuillez autoriser l\'accès à la caméra dans les paramètres de votre navigateur.';
+        } else if (err.name === 'NotFoundError' || err.message?.includes('NotFoundError')) {
+            errorMessage = 'Aucune caméra trouvée. Vérifiez que votre appareil possède une caméra.';
+        } else if (err.name === 'NotReadableError' || err.message?.includes('NotReadableError')) {
+            errorMessage = 'La caméra est déjà utilisée par une autre application. Fermez les autres applications utilisant la caméra et réessayez.';
+        } else if (err.message) {
+            errorMessage = 'Erreur: ' + err.message;
+        }
+        
+        showStatusMessage(errorMessage, 'error');
+        
+        // Réactiver le bouton de démarrage
+        document.getElementById('startScanBtn').disabled = false;
+        document.getElementById('stopScanBtn').disabled = true;
     }
 }
 
@@ -141,38 +161,115 @@ function startQuaggaScan() {
         }, function(err) {
             if (err) {
                 console.error("Erreur Quagga:", err);
-                // Fallback sur html5-qrcode
+                
+                // Si c'est une erreur NotReadableError, essayer avec la caméra avant
+                if (err.name === 'NotReadableError' || err.message?.includes('NotReadableError') || err.message?.includes('Could not start video source')) {
+                    console.log("Caméra arrière indisponible, essai avec la caméra avant...");
+                    showStatusMessage('Caméra arrière indisponible, essai avec la caméra avant...', 'info');
+                    
+                    // Réessayer avec la caméra avant
+                    const configUser = {
+                        inputStream: {
+                            name: "Live",
+                            type: "LiveStream",
+                            target: document.querySelector('#reader'),
+                            constraints: {
+                                width: { min: 640, ideal: 1280, max: 1920 },
+                                height: { min: 480, ideal: 720, max: 1080 },
+                                facingMode: "user"
+                            }
+                        },
+                        locator: {
+                            patchSize: "medium",
+                            halfSample: true
+                        },
+                        numOfWorkers: 2,
+                        decoder: {
+                            readers: [
+                                "ean_reader",
+                                "ean_8_reader",
+                                "code_128_reader",
+                                "code_39_reader",
+                                "code_39_vin_reader",
+                                "codabar_reader",
+                                "upc_reader",
+                                "upc_e_reader",
+                                "i2of5_reader"
+                            ]
+                        },
+                        locate: true
+                    };
+                    
+                    Quagga.init(configUser, function(err2) {
+                        if (err2) {
+                            console.error("Erreur avec caméra avant aussi:", err2);
+                            showStatusMessage('Erreur: La caméra est déjà utilisée par une autre application. Fermez les autres applications et réessayez.', 'error');
+                            // Fallback sur html5-qrcode
+                            startQRCodeScan().then(resolve).catch(reject);
+                            return;
+                        }
+                        
+                        console.log("Quagga initialisé avec succès (caméra avant)");
+                        try {
+                            Quagga.start();
+                            setupQuaggaDetector(resolve);
+                        } catch (startErr) {
+                            console.error("Erreur lors du démarrage:", startErr);
+                            showStatusMessage('Erreur: Impossible de démarrer la caméra.', 'error');
+                            reject(startErr);
+                        }
+                    });
+                    return;
+                }
+                
+                // Autre erreur, fallback sur html5-qrcode
+                showStatusMessage('Erreur caméra. Essai avec une autre méthode...', 'info');
                 startQRCodeScan().then(resolve).catch(reject);
                 return;
             }
+            
             console.log("Quagga initialisé avec succès");
-            Quagga.start();
-            
-            // Détecter les codes-barres
-            Quagga.onDetected(function(result) {
-                console.log("=== Code-barres détecté ===");
-                console.log("Résultat complet:", result);
-                const code = result.codeResult ? result.codeResult.code : null;
-                console.log("Code extrait:", code);
-                if (result.codeResult) {
-                    console.log("Format:", result.codeResult.format);
-                }
-                if (code && code.trim() !== '') {
-                    stopScan();
-                    processScannedCode(code);
-                } else {
-                    console.warn("Code vide ou invalide détecté");
-                }
-            });
-            
-            isScanning = true;
-            document.getElementById('startScanBtn').disabled = true;
-            document.getElementById('stopScanBtn').disabled = false;
-            hideManualInput();
-            hideProductForm();
-            resolve();
+            try {
+                Quagga.start();
+                setupQuaggaDetector(resolve);
+            } catch (startErr) {
+                console.error("Erreur lors du démarrage:", startErr);
+                showStatusMessage('Erreur: Impossible de démarrer la caméra.', 'error');
+                reject(startErr);
+            }
         });
     });
+}
+
+// Configurer le détecteur Quagga
+function setupQuaggaDetector(resolve) {
+    // Détecter les codes-barres
+    Quagga.onDetected(function(result) {
+        console.log("=== Code-barres détecté ===");
+        console.log("Résultat complet:", result);
+        const code = result.codeResult ? result.codeResult.code : null;
+        console.log("Code extrait:", code);
+        if (result.codeResult) {
+            console.log("Format:", result.codeResult.format);
+        }
+        if (code && code.trim() !== '') {
+            stopScan();
+            processScannedCode(code);
+        } else {
+            console.warn("Code vide ou invalide détecté");
+        }
+    });
+    
+    isScanning = true;
+    document.getElementById('startScanBtn').disabled = true;
+    document.getElementById('stopScanBtn').disabled = false;
+    hideManualInput();
+    hideProductForm();
+    showStatusMessage('Scan en cours... Pointez la caméra vers le code-barres', 'info');
+    setTimeout(() => {
+        showStatusMessage('', '');
+    }, 3000);
+    resolve();
 }
 
 // Scanner avec html5-qrcode (QR codes)
@@ -276,6 +373,60 @@ function hideManualInput() {
     if (manualForm) {
         manualForm.reset();
     }
+}
+
+// Fonction utilitaire pour charger une image avec proxy pour éviter les erreurs 403
+function loadImageWithProxy(imgElement, imageUrl, placeholderElement) {
+    if (!imgElement || !imageUrl) return;
+    
+    // Liste des proxies d'images à essayer en fallback
+    const imageProxies = [
+        `https://images.weserv.nl/?url=${encodeURIComponent(imageUrl)}`,
+        `https://api.allorigins.win/raw?url=${encodeURIComponent(imageUrl)}`,
+        `https://corsproxy.io/?${encodeURIComponent(imageUrl)}`
+    ];
+    
+    let currentProxyIndex = 0;
+    
+    const tryNextProxy = () => {
+        if (currentProxyIndex >= imageProxies.length) {
+            // Tous les proxies ont échoué, essayer l'image originale
+            imgElement.src = imageUrl;
+            imgElement.onerror = () => {
+                // Si l'image originale échoue aussi, afficher le placeholder
+                if (imgElement.classList) {
+                    imgElement.classList.remove('show');
+                }
+                if (placeholderElement) {
+                    if (placeholderElement.classList) {
+                        placeholderElement.classList.remove('hidden');
+                    }
+                    placeholderElement.textContent = 'Image non disponible';
+                }
+            };
+            return;
+        }
+        
+        const proxyUrl = imageProxies[currentProxyIndex];
+        currentProxyIndex++;
+        
+        imgElement.src = proxyUrl;
+        imgElement.onload = () => {
+            if (imgElement.classList) {
+                imgElement.classList.add('show');
+            }
+            if (placeholderElement && placeholderElement.classList) {
+                placeholderElement.classList.add('hidden');
+            }
+        };
+        imgElement.onerror = () => {
+            // Ce proxy ne fonctionne pas, essayer le suivant
+            tryNextProxy();
+        };
+    };
+    
+    // Commencer avec le premier proxy
+    tryNextProxy();
 }
 
 // Recherche manuelle par code-barres (bouton)
@@ -445,15 +596,7 @@ async function fetchProductImageAndInfo(code) {
             const imageUrl = product.image_url || product.image_front_url || product.image_small_url || '';
             
             if (imageUrl) {
-                imageContainer.src = imageUrl;
-                imageContainer.onload = () => {
-                    imageContainer.classList.add('show');
-                    imagePlaceholder.classList.add('hidden');
-                };
-                imageContainer.onerror = () => {
-                    imagePlaceholder.textContent = 'Image non disponible';
-                    imagePlaceholder.classList.remove('hidden');
-                };
+                loadImageWithProxy(imageContainer, imageUrl, imagePlaceholder);
             } else {
                 imagePlaceholder.textContent = 'Image non disponible';
             }
@@ -480,15 +623,7 @@ async function fetchProductImageAndInfo(code) {
         const imageUrl = await searchProductImage(code);
         
         if (imageUrl) {
-            imageContainer.src = imageUrl;
-            imageContainer.onload = () => {
-                imageContainer.classList.add('show');
-                imagePlaceholder.classList.add('hidden');
-            };
-            imageContainer.onerror = () => {
-                imagePlaceholder.textContent = 'Image non disponible';
-                imagePlaceholder.classList.remove('hidden');
-            };
+            loadImageWithProxy(imageContainer, imageUrl, imagePlaceholder);
         } else {
             imagePlaceholder.textContent = 'Image non disponible';
         }
@@ -543,6 +678,12 @@ async function searchProductImage(code) {
 function showProductForm() {
     document.getElementById('productFormSection').style.display = 'block';
     hideManualInput();
+    
+    // Réinitialiser la quantité à 1
+    const productQtyInput = document.getElementById('productQty');
+    if (productQtyInput) {
+        productQtyInput.value = 1;
+    }
     
     // Focus sur le champ nom produit
     setTimeout(() => {
@@ -694,100 +835,149 @@ async function fetchProductFromBarcode(barcode, showLoading = false) {
     try {
         // Utiliser un proxy CORS pour éviter les problèmes CORS
         const apiUrl = `https://api.upcitemdb.com/prod/trial/lookup?upc=${barcode}`;
-        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(apiUrl)}`;
-        const response = await fetch(proxyUrl);
         
-        if (response.ok) {
-            const responseText = await response.text();
-            let data;
+        // Essayer plusieurs proxies CORS en fallback
+        let data = null;
+        const proxies = [
+            {
+                url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(apiUrl)}`,
+                type: 'direct'
+            },
+            {
+                url: `https://api.allorigins.win/get?url=${encodeURIComponent(apiUrl)}`,
+                type: 'allorigins'
+            },
+            {
+                url: `https://corsproxy.io/?${encodeURIComponent(apiUrl)}`,
+                type: 'direct'
+            }
+        ];
+        
+        for (const proxy of proxies) {
             try {
-                data = JSON.parse(responseText);
-            } catch (e) {
-                // Essayer d'extraire le JSON si nécessaire
-                const jsonMatch = responseText.match(/\{.*\}/s);
-                if (jsonMatch) {
-                    data = JSON.parse(jsonMatch[0]);
-                } else {
-                    throw new Error('Format de réponse invalide');
+                const proxyResponse = await fetch(proxy.url, {
+                    method: 'GET',
+                    mode: 'cors',
+                    cache: 'no-cache',
+                    headers: {
+                        'Accept': 'application/json'
+                    }
+                });
+                
+                if (proxyResponse.ok) {
+                    let responseText;
+                    
+                    // allorigins.win retourne les données dans .contents
+                    if (proxy.type === 'allorigins') {
+                        try {
+                            const proxyData = await proxyResponse.json();
+                            responseText = proxyData.contents || proxyData;
+                        } catch (e) {
+                            responseText = await proxyResponse.text();
+                        }
+                    } else {
+                        // Autres proxies retournent directement le texte
+                        responseText = await proxyResponse.text();
+                    }
+                    
+                    // Nettoyer le texte avant de parser
+                    if (typeof responseText === 'string') {
+                        responseText = responseText.trim();
+                        // Enlever les préfixes/suffixes JSONP si présents
+                        responseText = responseText.replace(/^[^{[]*/, '').replace(/[^}\]]*$/, '');
+                    }
+                    
+                    try {
+                        data = JSON.parse(responseText);
+                        // Vérifier que c'est un objet valide
+                        if (data && typeof data === 'object' && !Array.isArray(data)) {
+                            break; // Succès
+                        }
+                    } catch (parseError) {
+                        // Essayer d'extraire le JSON si nécessaire
+                        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+                        if (jsonMatch) {
+                            try {
+                                data = JSON.parse(jsonMatch[0]);
+                                if (data && typeof data === 'object') {
+                                    break; // Succès
+                                }
+                            } catch (e) {
+                                // Continuer avec le proxy suivant
+                            }
+                        }
+                        continue; // Essayer le proxy suivant
+                    }
+                }
+            } catch (proxyError) {
+                // Essayer le proxy suivant silencieusement
+                continue;
+            }
+        }
+        
+        if (!data) {
+            throw new Error('Tous les proxies CORS ont échoué');
+        }
+        
+        // Vérifier si on a trouvé un produit
+        if (data && data.items && data.items.length > 0) {
+            const item = data.items[0];
+            
+            // Remplir automatiquement les champs
+            if (productNameInput) {
+                const title = item.title || '';
+                const brand = item.brand || '';
+                const productName = brand && title ? `${brand} ${title}` : title || brand || '';
+                productNameInput.value = productName;
+                productNameInput.disabled = false;
+                productNameInput.placeholder = 'Ex: iPhone 15 Pro';
+            }
+            
+            if (categoryDetailsInput) {
+                const description = item.description || '';
+                const category = item.category || '';
+                const details = category ? `${category}${description ? ' - ' + description : ''}` : description;
+                if (details) {
+                    categoryDetailsInput.value = details;
                 }
             }
             
-            // Vérifier si on a trouvé un produit
-            if (data && data.items && data.items.length > 0) {
-                const item = data.items[0];
+            if (imageUrlInput && item.images && item.images.length > 0) {
+                const originalImageUrl = item.images[0];
+                imageUrlInput.value = originalImageUrl;
                 
-                // Remplir automatiquement les champs
-                if (productNameInput) {
-                    const title = item.title || '';
-                    const brand = item.brand || '';
-                    const productName = brand && title ? `${brand} ${title}` : title || brand || '';
-                    productNameInput.value = productName;
-                    productNameInput.disabled = false;
-                    productNameInput.placeholder = 'Ex: iPhone 15 Pro';
-                }
+                // Afficher l'image dans le conteneur avec proxy pour éviter les erreurs 403
+                const imageContainer = document.getElementById('manualImageContainer');
+                const img = document.getElementById('manualProductImage');
+                const placeholder = document.getElementById('manualImagePlaceholder');
                 
-                if (categoryDetailsInput) {
-                    const description = item.description || '';
-                    const category = item.category || '';
-                    const details = category ? `${category}${description ? ' - ' + description : ''}` : description;
-                    if (details) {
-                        categoryDetailsInput.value = details;
-                    }
+                if (imageContainer && img && placeholder) {
+                    imageContainer.style.display = 'block';
+                    loadImageWithProxy(img, originalImageUrl, placeholder);
                 }
-                
-                if (imageUrlInput && item.images && item.images.length > 0) {
-                    imageUrlInput.value = item.images[0];
-                    
-                    // Afficher l'image dans le conteneur
-                    const imageContainer = document.getElementById('manualImageContainer');
-                    const img = document.getElementById('manualProductImage');
-                    const placeholder = document.getElementById('manualImagePlaceholder');
-                    
-                    if (imageContainer && img && placeholder) {
-                        imageContainer.style.display = 'block';
-                        img.src = item.images[0];
-                        img.onload = () => {
-                            img.classList.add('show');
-                            placeholder.classList.add('hidden');
-                        };
-                        img.onerror = () => {
-                            img.classList.remove('show');
-                            placeholder.classList.remove('hidden');
-                            placeholder.textContent = 'Image non disponible';
-                        };
-                    }
-                }
-                
-                // Réactiver le champ nom si désactivé
-                if (productNameInput && productNameInput.disabled) {
-                    productNameInput.disabled = false;
-                    productNameInput.placeholder = 'Ex: iPhone 15 Pro';
-                }
-                
-                // Réactiver le champ nom si désactivé
-                if (productNameInput && productNameInput.disabled) {
-                    productNameInput.disabled = false;
-                    productNameInput.placeholder = 'Ex: iPhone 15 Pro';
-                }
-                
-                // Afficher un message de succès
-                showStatusMessage('✅ Informations produit récupérées avec succès!', 'success');
-                setTimeout(() => {
-                    showStatusMessage('', '');
-                }, 3000);
-            } else {
-                // Produit non trouvé
-                if (productNameInput) {
-                    productNameInput.disabled = false;
-                    productNameInput.placeholder = 'Ex: iPhone 15 Pro';
-                }
-                showStatusMessage('ℹ️ Produit non trouvé dans la base de données. Veuillez remplir manuellement.', 'info');
-                setTimeout(() => {
-                    showStatusMessage('', '');
-                }, 4000);
             }
+            
+            // Réactiver le champ nom si désactivé
+            if (productNameInput && productNameInput.disabled) {
+                productNameInput.disabled = false;
+                productNameInput.placeholder = 'Ex: iPhone 15 Pro';
+            }
+            
+            // Afficher un message de succès
+            showStatusMessage('✅ Informations produit récupérées avec succès!', 'success');
+            setTimeout(() => {
+                showStatusMessage('', '');
+            }, 3000);
         } else {
-            throw new Error('Erreur API');
+            // Produit non trouvé
+            if (productNameInput) {
+                productNameInput.disabled = false;
+                productNameInput.placeholder = 'Ex: iPhone 15 Pro';
+            }
+            showStatusMessage('ℹ️ Produit non trouvé dans la base de données. Veuillez remplir manuellement.', 'info');
+            setTimeout(() => {
+                showStatusMessage('', '');
+            }, 4000);
         }
     } catch (error) {
         console.error('Erreur lors de la récupération des informations produit:', error);
@@ -811,43 +1001,96 @@ async function fetchProductFromBarcode(barcode, showLoading = false) {
 async function fetchGoogleSuggestions(query, container, inputElement) {
     try {
         // Utiliser l'API Google Suggest avec proxy CORS
-        // Utiliser allorigins.win comme proxy fiable
         const googleUrl = `http://suggestqueries.google.com/complete/search?client=chrome&q=${encodeURIComponent(query)}&hl=fr`;
-        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(googleUrl)}`;
         
-        const response = await fetch(proxyUrl);
+        // Essayer plusieurs proxies en fallback (ordre de préférence)
+        const proxies = [
+            {
+                url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(googleUrl)}`,
+                type: 'direct'
+            },
+            {
+                url: `https://api.allorigins.win/get?url=${encodeURIComponent(googleUrl)}`,
+                type: 'allorigins'
+            },
+            {
+                url: `https://corsproxy.io/?${encodeURIComponent(googleUrl)}`,
+                type: 'direct'
+            }
+        ];
         
-        if (response.ok) {
-            const text = await response.text();
-            let data;
-            
+        let suggestions = null;
+        
+        for (const proxy of proxies) {
             try {
-                // Essayer de parser directement
-                data = JSON.parse(text);
-            } catch (e) {
-                // Si échec, essayer d'extraire le JSON du texte
-                const jsonMatch = text.match(/\[.*\]/s);
-                if (jsonMatch) {
-                    data = JSON.parse(jsonMatch[0]);
-                } else {
-                    throw new Error('Format de réponse invalide');
+                const response = await fetch(proxy.url, {
+                    method: 'GET',
+                    mode: 'cors',
+                    cache: 'no-cache',
+                    headers: {
+                        'Accept': 'application/json'
+                    }
+                });
+                
+                if (response.ok) {
+                    let text;
+                    
+                    // allorigins.win retourne les données dans .contents
+                    if (proxy.type === 'allorigins') {
+                        try {
+                            const proxyData = await response.json();
+                            text = proxyData.contents || proxyData;
+                        } catch (e) {
+                            text = await response.text();
+                        }
+                    } else {
+                        text = await response.text();
+                    }
+                    
+                    // Nettoyer le texte avant de parser
+                    if (typeof text === 'string') {
+                        text = text.trim();
+                        // Enlever les préfixes/suffixes JSONP si présents
+                        text = text.replace(/^[^[]*/, '').replace(/[^\]]*$/, '');
+                    }
+                    
+                    let data;
+                    try {
+                        data = JSON.parse(text);
+                    } catch (e) {
+                        // Essayer d'extraire le JSON si nécessaire
+                        const jsonMatch = text.match(/\[[\s\S]*\]/);
+                        if (jsonMatch) {
+                            try {
+                                data = JSON.parse(jsonMatch[0]);
+                            } catch (e2) {
+                                continue; // Essayer le proxy suivant
+                            }
+                        } else {
+                            continue; // Essayer le proxy suivant
+                        }
+                    }
+                    
+                    // La structure est : ["query", ["sugg1", "sugg2"...], ...]
+                    suggestions = data && Array.isArray(data) && data[1] && Array.isArray(data[1]) ? data[1] : [];
+                    
+                    if (suggestions && suggestions.length > 0) {
+                        break; // Succès, sortir de la boucle
+                    }
                 }
+            } catch (proxyError) {
+                // Essayer le proxy suivant silencieusement
+                continue;
             }
-            
-            // La structure est : ["query", ["sugg1", "sugg2"...], ...]
-            const suggestions = data && data[1] ? data[1] : [];
-            
-            if (suggestions.length > 0) {
-                displaySuggestions(suggestions, container, inputElement);
-            } else {
-                container.style.display = 'none';
-            }
+        }
+        
+        if (suggestions && suggestions.length > 0) {
+            displaySuggestions(suggestions, container, inputElement);
         } else {
             container.style.display = 'none';
         }
     } catch (error) {
-        console.error('Erreur lors de la récupération des suggestions:', error);
-        // En cas d'erreur, masquer les suggestions
+        // En cas d'erreur, masquer les suggestions silencieusement
         container.style.display = 'none';
     }
 }
@@ -915,59 +1158,119 @@ async function searchBarcodeFromProductName(productName, nameInputElement) {
     showStatusMessage('Recherche du code-barres...', 'info');
     
     try {
-        // Étape 1: Rechercher le code-barres via l'API search (avec proxy CORS)
+        // Étape 1: Rechercher le code-barres via l'API search
         const searchUrl = `https://api.upcitemdb.com/prod/trial/search?s=${encodeURIComponent(productName)}&match_mode=0&type=product`;
-        const searchProxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(searchUrl)}`;
-        const searchResponse = await fetch(searchProxyUrl);
         
-        if (searchResponse.ok) {
-            const searchText = await searchResponse.text();
-            let searchData;
-            try {
-                searchData = JSON.parse(searchText);
-            } catch (e) {
-                // Essayer d'extraire le JSON si nécessaire
-                const jsonMatch = searchText.match(/\{.*\}/s);
-                if (jsonMatch) {
-                    searchData = JSON.parse(jsonMatch[0]);
-                } else {
-                    throw new Error('Format de réponse invalide');
-                }
+        // Essayer plusieurs proxies CORS en fallback
+        let searchData = null;
+        const proxies = [
+            {
+                url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(searchUrl)}`,
+                type: 'direct'
+            },
+            {
+                url: `https://api.allorigins.win/get?url=${encodeURIComponent(searchUrl)}`,
+                type: 'allorigins'
+            },
+            {
+                url: `https://corsproxy.io/?${encodeURIComponent(searchUrl)}`,
+                type: 'direct'
             }
-            
-            if (searchData && searchData.items && searchData.items.length > 0) {
-                // Prendre le premier résultat le plus pertinent
-                const item = searchData.items[0];
-                const ean = item.ean || item.upc || null;
+        ];
+        
+        for (const proxy of proxies) {
+            try {
+                const proxyResponse = await fetch(proxy.url, {
+                    method: 'GET',
+                    mode: 'cors',
+                    cache: 'no-cache',
+                    headers: {
+                        'Accept': 'application/json'
+                    }
+                });
                 
-                if (ean) {
-                    // Remplir le champ code-barres
-                    if (serialNumberInput) {
-                        serialNumberInput.value = ean;
+                if (proxyResponse.ok) {
+                    let responseText;
+                    
+                    // allorigins.win retourne les données dans .contents
+                    if (proxy.type === 'allorigins') {
+                        try {
+                            const proxyData = await proxyResponse.json();
+                            responseText = proxyData.contents || proxyData;
+                        } catch (e) {
+                            responseText = await proxyResponse.text();
+                        }
+                    } else {
+                        // Autres proxies retournent directement le texte
+                        responseText = await proxyResponse.text();
                     }
                     
-                    // Étape 2: Récupérer les caractéristiques complètes via lookup
-                    await fetchProductFromBarcode(ean, false);
-                } else {
-                    throw new Error('Code-barres non trouvé');
+                    // Nettoyer le texte avant de parser
+                    if (typeof responseText === 'string') {
+                        // Enlever les caractères de contrôle et les espaces en début/fin
+                        responseText = responseText.trim();
+                        // Enlever les préfixes/suffixes JSONP si présents
+                        responseText = responseText.replace(/^[^{[]*/, '').replace(/[^}\]]*$/, '');
+                    }
+                    
+                    try {
+                        searchData = JSON.parse(responseText);
+                        // Vérifier que c'est un objet valide avec la structure attendue
+                        if (searchData && typeof searchData === 'object' && !Array.isArray(searchData)) {
+                            break; // Succès
+                        }
+                    } catch (parseError) {
+                        // Essayer d'extraire le JSON si nécessaire
+                        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+                        if (jsonMatch) {
+                            try {
+                                searchData = JSON.parse(jsonMatch[0]);
+                                if (searchData && typeof searchData === 'object') {
+                                    break; // Succès
+                                }
+                            } catch (e) {
+                                // Continuer avec le proxy suivant
+                            }
+                        }
+                        continue; // Essayer le proxy suivant
+                    }
                 }
+            } catch (proxyError) {
+                // Essayer le proxy suivant silencieusement
+                continue;
+            }
+        }
+        
+        if (searchData && searchData.items && searchData.items.length > 0) {
+            // Prendre le premier résultat le plus pertinent
+            const item = searchData.items[0];
+            const ean = item.ean || item.upc || null;
+            
+            if (ean) {
+                // Remplir le champ code-barres
+                if (serialNumberInput) {
+                    serialNumberInput.value = ean;
+                }
+                
+                // Étape 2: Récupérer les caractéristiques complètes via lookup
+                await fetchProductFromBarcode(ean, false);
             } else {
-                // Aucun produit trouvé
-                if (nameInputElement) {
-                    nameInputElement.disabled = false;
-                    nameInputElement.placeholder = 'Ex: iPhone 15 Pro';
-                }
-                if (searchBtn) {
-                    searchBtn.disabled = false;
-                    searchBtn.classList.remove('loading');
-                }
-                showStatusMessage('ℹ️ Aucun code-barres trouvé pour ce produit. Veuillez entrer le code-barres manuellement.', 'info');
-                setTimeout(() => {
-                    showStatusMessage('', '');
-                }, 4000);
+                throw new Error('Code-barres non trouvé');
             }
         } else {
-            throw new Error('Erreur API search');
+            // Aucun produit trouvé
+            if (nameInputElement) {
+                nameInputElement.disabled = false;
+                nameInputElement.placeholder = 'Ex: iPhone 15 Pro';
+            }
+            if (searchBtn) {
+                searchBtn.disabled = false;
+                searchBtn.classList.remove('loading');
+            }
+            showStatusMessage('ℹ️ Aucun code-barres trouvé pour ce produit. Veuillez entrer le code-barres manuellement.', 'info');
+            setTimeout(() => {
+                showStatusMessage('', '');
+            }, 4000);
         }
     } catch (error) {
         console.error('Erreur lors de la recherche du code-barres:', error);
@@ -1000,18 +1303,21 @@ function hideProductForm() {
 function saveItemToDashboard(itemData) {
     let items = JSON.parse(localStorage.getItem('dashboardItems') || '[]');
     
+    // La quantité à ajouter (par défaut 1 si non spécifiée)
+    const quantityToAdd = itemData.quantity || 1;
+    
     // Chercher si un item avec le même numéro de série existe
     const existingIndex = items.findIndex(item => item.serialNumber === itemData.serialNumber);
     
     if (existingIndex !== -1) {
         // Item existe déjà, augmenter la quantité
-        items[existingIndex].quantity += 1;
+        items[existingIndex].quantity = (items[existingIndex].quantity || 1) + quantityToAdd;
         items[existingIndex].lastUpdated = new Date().toISOString();
     } else {
-        // Nouvel item, ajouter avec quantité 1
+        // Nouvel item, ajouter avec la quantité spécifiée
         items.push({
             ...itemData,
-            quantity: 1,
+            quantity: quantityToAdd,
             createdAt: new Date().toISOString(),
             lastUpdated: new Date().toISOString()
         });
@@ -1026,6 +1332,7 @@ async function sendToWebhook() {
     // Valider le formulaire
     const productName = document.getElementById('productName').value.trim();
     const serialNumber = document.getElementById('serialNumber').value.trim();
+    const productQty = parseInt(document.getElementById('productQty').value) || 1;
     const productType = document.getElementById('productType').value;
     const categoryDetails = document.getElementById('categoryDetails').value.trim();
     
@@ -1038,6 +1345,12 @@ async function sendToWebhook() {
     if (!serialNumber) {
         showStatusMessage('Le numéro de série est obligatoire', 'error');
         document.getElementById('serialNumber').focus();
+        return;
+    }
+    
+    if (!productQty || productQty < 1) {
+        showStatusMessage('La quantité doit être au moins de 1', 'error');
+        document.getElementById('productQty').focus();
         return;
     }
     
@@ -1060,6 +1373,7 @@ async function sendToWebhook() {
             product: {
                 name: productName,
                 serialNumber: serialNumber,
+                quantity: productQty,
                 type: productType,
                 categoryDetails: categoryDetails || null,
                 image: imageUrl || null,
@@ -1071,6 +1385,7 @@ async function sendToWebhook() {
         saveItemToDashboard({
             name: productName,
             serialNumber: serialNumber,
+            quantity: productQty,
             type: productType,
             categoryDetails: categoryDetails || null,
             image: imageUrl || null,
@@ -1121,6 +1436,11 @@ function scanAnother() {
     hideProductForm();
     currentScannedCode = null;
     document.getElementById('productForm').reset();
+    // Réinitialiser la quantité à 1 après le reset
+    const productQtyInput = document.getElementById('productQty');
+    if (productQtyInput) {
+        productQtyInput.value = 1;
+    }
     document.getElementById('manualCodeInput').value = '';
     document.getElementById('productImage').src = '';
     document.getElementById('productImage').classList.remove('show');
