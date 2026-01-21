@@ -6,6 +6,9 @@ let currentScannedCode = null;
 const DEFAULT_WEBHOOK_URL = 'https://n8n.goreview.fr/webhook-test/acff1955-9ed2-4e48-b989-5a17d78b4452';
 let webhookUrl = localStorage.getItem('webhookUrl') || DEFAULT_WEBHOOK_URL;
 
+// Configuration des APIs - Toutes gratuites et publiques, pas besoin de clés
+// Utilisation d'APIs gratuites : Open Food Facts, Datakick/GTINsearch, UPC Database
+
 // Credentials de connexion
 const LOGIN_CREDENTIALS = {
     username: 'global',
@@ -83,11 +86,223 @@ function initializeApp() {
     document.getElementById('sendWebhookBtn').addEventListener('click', sendToWebhook);
     document.getElementById('scanAnotherBtn').addEventListener('click', scanAnother);
     
+    // Gestion de l'upload d'image
+    document.getElementById('imageFileInput').addEventListener('change', handleImageFileSelect);
+    document.getElementById('takePhotoBtn').addEventListener('click', startCameraCapture);
+    document.getElementById('capturePhotoBtn').addEventListener('click', capturePhoto);
+    document.getElementById('cancelCameraBtn').addEventListener('click', cancelCamera);
+    
+    // Gestion des catégories personnalisées
+    setupCategoryManagement();
+    
     // Validation du formulaire
     document.getElementById('productForm').addEventListener('submit', (e) => {
         e.preventDefault();
         sendToWebhook();
     });
+}
+
+// Configuration de la gestion des catégories
+function setupCategoryManagement() {
+    // Charger les catégories personnalisées dans les selects
+    loadCustomCategories();
+    
+    // Event listeners pour ajouter des catégories personnalisées
+    const addCategoryBtn = document.getElementById('addCategoryBtn');
+    const manualAddCategoryBtn = document.getElementById('manualAddCategoryBtn');
+    const customCategoryInput = document.getElementById('customCategoryInput');
+    const manualCustomCategoryInput = document.getElementById('manualCustomCategoryInput');
+    
+    // Afficher/masquer les champs d'ajout de catégorie
+    const productCategory = document.getElementById('productCategory');
+    const manualProductCategory = document.getElementById('manualProductCategory');
+    
+    if (productCategory) {
+        productCategory.addEventListener('change', function() {
+            if (this.value === 'autre') {
+                customCategoryInput.style.display = 'block';
+                addCategoryBtn.style.display = 'block';
+            } else {
+                customCategoryInput.style.display = 'none';
+                addCategoryBtn.style.display = 'none';
+            }
+        });
+    }
+    
+    if (manualProductCategory) {
+        manualProductCategory.addEventListener('change', function() {
+            if (this.value === 'autre') {
+                manualCustomCategoryInput.style.display = 'block';
+                manualAddCategoryBtn.style.display = 'block';
+            } else {
+                manualCustomCategoryInput.style.display = 'none';
+                manualAddCategoryBtn.style.display = 'none';
+            }
+        });
+    }
+    
+    // Ajouter une catégorie personnalisée
+    if (addCategoryBtn) {
+        addCategoryBtn.addEventListener('click', () => {
+            const categoryName = customCategoryInput.value.trim();
+            if (categoryName) {
+                addCustomCategory(categoryName, productCategory);
+                customCategoryInput.value = '';
+                customCategoryInput.style.display = 'none';
+                addCategoryBtn.style.display = 'none';
+            }
+        });
+    }
+    
+    if (manualAddCategoryBtn) {
+        manualAddCategoryBtn.addEventListener('click', () => {
+            const categoryName = manualCustomCategoryInput.value.trim();
+            if (categoryName) {
+                addCustomCategory(categoryName, manualProductCategory);
+                manualCustomCategoryInput.value = '';
+                manualCustomCategoryInput.style.display = 'none';
+                manualAddCategoryBtn.style.display = 'none';
+            }
+        });
+    }
+}
+
+// Détecter automatiquement la catégorie basée sur le nom du produit
+function detectCategory(productName) {
+    if (!productName) return null;
+    
+    const name = productName.toLowerCase();
+    
+    // Mots-clés pour chaque catégorie
+    const keywords = {
+        drone: ['drone', 'quadcopter', 'fpv', 'dji', 'mavic', 'phantom', 'air', 'mini', 'pro', 'inspire'],
+        video: ['caméra', 'camera', 'camcorder', 'cam', 'ptz', 'webcam', 'cctv', 'surveillance', 'sony', 'canon', 'panasonic', '4k', 'hd', 'uhd'],
+        audio: ['microphone', 'micro', 'mic', 'lavalier', 'lav', 'shotgun', 'condenser', 'dynamic', 'audio', 'sound', 'speaker', 'haut-parleur', 'ampli', 'amplifier'],
+        streaming: ['streaming', 'stream', 'capture', 'elgato', 'obs', 'encoder', 'decoder', 'rtmp', 'hls'],
+        robot: ['robot', 'robotic', 'automation', 'automate', 'bot', 'automated']
+    };
+    
+    // Vérifier chaque catégorie
+    for (const [category, words] of Object.entries(keywords)) {
+        if (words.some(word => name.includes(word))) {
+            return category;
+        }
+    }
+    
+    return null;
+}
+
+// Détecter et définir la catégorie dans un select
+function detectAndSetCategory(productName, selectId) {
+    if (!productName || !selectId) return;
+    
+    const detectedCategory = detectCategory(productName);
+    const selectElement = document.getElementById(selectId);
+    
+    if (selectElement && detectedCategory) {
+        // Vérifier si la catégorie détectée existe dans le select
+        const optionExists = Array.from(selectElement.options).some(opt => opt.value === detectedCategory);
+        if (optionExists) {
+            selectElement.value = detectedCategory;
+        }
+    }
+}
+
+// Charger les catégories personnalisées dans les selects
+function loadCustomCategories() {
+    const customCategories = JSON.parse(localStorage.getItem('customCategories') || '[]');
+    const deletedCategories = JSON.parse(localStorage.getItem('deletedCategories') || '[]');
+    const selects = [
+        document.getElementById('productCategory'),
+        document.getElementById('manualProductCategory')
+    ];
+    
+    selects.forEach(select => {
+        if (!select) return;
+        
+        // Supprimer toutes les options sauf celles qui sont disponibles
+        const defaultCategories = ['drone', 'video', 'audio', 'streaming', 'robot', 'autre'];
+        const availableDefaultCategories = defaultCategories.filter(cat => !deletedCategories.includes(cat));
+        const availableCustomCategories = customCategories.filter(cat => !deletedCategories.includes(cat));
+        
+        // Supprimer toutes les options existantes
+        select.innerHTML = '';
+        
+        // Ajouter les catégories par défaut disponibles
+        availableDefaultCategories.forEach(category => {
+            const option = document.createElement('option');
+            option.value = category;
+            option.textContent = category.charAt(0).toUpperCase() + category.slice(1);
+            select.appendChild(option);
+        });
+        
+        // Ajouter les catégories personnalisées disponibles
+        availableCustomCategories.forEach(category => {
+            const option = document.createElement('option');
+            option.value = category;
+            option.textContent = category.charAt(0).toUpperCase() + category.slice(1);
+            select.appendChild(option);
+        });
+    });
+}
+
+// Ajouter une catégorie personnalisée
+function addCustomCategory(categoryName, selectElement) {
+    const category = categoryName.toLowerCase().trim();
+    if (!category) return;
+    
+    // Vérifier si cette catégorie n'est pas supprimée
+    const deletedCategories = JSON.parse(localStorage.getItem('deletedCategories') || '[]');
+    if (deletedCategories.includes(category)) {
+        // Réactiver la catégorie supprimée
+        const updatedDeleted = deletedCategories.filter(c => c !== category);
+        localStorage.setItem('deletedCategories', JSON.stringify(updatedDeleted));
+        showStatusMessage(`Catégorie "${categoryName}" réactivée`, 'success');
+        loadCustomCategories();
+        if (selectElement) {
+            selectElement.value = category;
+        }
+        return;
+    }
+    
+    // Vérifier si la catégorie existe déjà
+    const customCategories = JSON.parse(localStorage.getItem('customCategories') || '[]');
+    if (customCategories.includes(category)) {
+        showStatusMessage('Cette catégorie existe déjà', 'info');
+        return;
+    }
+    
+    // Vérifier que ce n'est pas une catégorie par défaut disponible
+    const defaultCategories = ['drone', 'video', 'audio', 'streaming', 'robot', 'autre'];
+    const availableDefaultCategories = defaultCategories.filter(cat => !deletedCategories.includes(cat));
+    if (availableDefaultCategories.includes(category)) {
+        showStatusMessage('Cette catégorie existe déjà (catégorie par défaut)', 'info');
+        return;
+    }
+    
+    // Ajouter la catégorie
+    customCategories.push(category);
+    localStorage.setItem('customCategories', JSON.stringify(customCategories));
+    
+    // Mettre à jour les selects
+    loadCustomCategories();
+    
+    // Sélectionner la nouvelle catégorie
+    if (selectElement) {
+        selectElement.value = category;
+    }
+    
+    showStatusMessage(`Catégorie "${categoryName}" ajoutée avec succès`, 'success');
+}
+
+// Obtenir toutes les catégories disponibles (standard + personnalisées, exclure les supprimées)
+function getAllCategories() {
+    const customCategories = JSON.parse(localStorage.getItem('customCategories') || '[]');
+    const deletedCategories = JSON.parse(localStorage.getItem('deletedCategories') || '[]');
+    const defaultCategories = ['drone', 'video', 'audio', 'streaming', 'robot', 'autre'];
+    const availableDefaultCategories = defaultCategories.filter(cat => !deletedCategories.includes(cat));
+    const availableCustomCategories = customCategories.filter(cat => !deletedCategories.includes(cat));
+    return [...availableDefaultCategories, ...availableCustomCategories];
 }
 
 // Démarrer le scan
@@ -354,6 +569,13 @@ function toggleManualInput() {
             
             if (productNameInput) {
                 setupAutocomplete(productNameInput);
+                
+                // Détecter la catégorie quand l'utilisateur tape dans le champ nom
+                productNameInput.addEventListener('input', function() {
+                    if (this.value.trim().length > 3) {
+                        detectAndSetCategory(this.value, 'manualProductCategory');
+                    }
+                });
             }
             
             // Setup recherche automatique par code-barres
@@ -382,7 +604,7 @@ function loadImageWithProxy(imgElement, imageUrl, placeholderElement) {
     // Liste des proxies d'images à essayer en fallback
     const imageProxies = [
         `https://images.weserv.nl/?url=${encodeURIComponent(imageUrl)}`,
-        `https://api.allorigins.win/raw?url=${encodeURIComponent(imageUrl)}`,
+        `https://api.allorigins.win/get?url=${encodeURIComponent(imageUrl)}`,
         `https://corsproxy.io/?${encodeURIComponent(imageUrl)}`
     ];
     
@@ -451,14 +673,15 @@ async function handleManualBarcodeSearch() {
         return;
     }
     
-    await fetchProductFromBarcode(barcode, true);
+    // Utiliser les APIs gratuites (Datakick/GTINsearch + Open Food Facts)
+    await fetchProductFromFreeAPIs(barcode, true);
 }
 
 // Gérer la saisie manuelle
 async function handleManualInput() {
     const productName = document.getElementById('manualProductName').value.trim();
     const serialNumber = document.getElementById('manualSerialNumber').value.trim();
-    const productType = document.getElementById('manualProductType').value;
+    const productCategory = document.getElementById('manualProductCategory').value;
     const categoryDetails = document.getElementById('manualCategoryDetails').value.trim();
     const imageUrl = document.getElementById('manualImageUrl').value.trim();
     
@@ -475,9 +698,9 @@ async function handleManualInput() {
         return;
     }
     
-    if (!productType) {
-        showStatusMessage('Le type est obligatoire', 'error');
-        document.getElementById('manualProductType').focus();
+    if (!productCategory) {
+        showStatusMessage('La catégorie est obligatoire', 'error');
+        document.getElementById('manualProductCategory').focus();
         return;
     }
     
@@ -485,7 +708,7 @@ async function handleManualInput() {
     saveItemToDashboard({
         name: productName,
         serialNumber: serialNumber,
-        type: productType,
+        category: productCategory,
         categoryDetails: categoryDetails || null,
         image: imageUrl || null,
         scannedCode: serialNumber
@@ -495,7 +718,7 @@ async function handleManualInput() {
     await sendManualToWebhook({
         name: productName,
         serialNumber: serialNumber,
-        type: productType,
+        category: productCategory,
         categoryDetails: categoryDetails || null,
         image: imageUrl || null,
         scannedCode: serialNumber
@@ -517,6 +740,7 @@ async function sendManualToWebhook(itemData) {
                 name: itemData.name,
                 serialNumber: itemData.serialNumber,
                 type: itemData.type,
+                category: itemData.category,
                 categoryDetails: itemData.categoryDetails,
                 image: itemData.image,
                 scannedCode: itemData.scannedCode
@@ -584,6 +808,16 @@ async function fetchProductImageAndInfo(code) {
     imagePlaceholder.classList.remove('hidden');
     imagePlaceholder.textContent = 'Recherche de l\'image...';
     
+    // Essayer d'abord les APIs gratuites
+    try {
+        await fetchProductFromFreeAPIs(code, false);
+        // Si les APIs gratuites ont réussi, on a déjà rempli les champs
+        return;
+    } catch (error) {
+        console.error("Erreur APIs gratuites:", error);
+        // Continuer avec les fallbacks
+    }
+    
     try {
         // Essayer Open Food Facts pour les produits alimentaires
         const response = await fetch(`https://world.openfoodfacts.org/api/v0/product/${code}.json`);
@@ -604,6 +838,8 @@ async function fetchProductImageAndInfo(code) {
             // Remplir le nom du produit si disponible
             if (product.product_name && !productNameInput.value) {
                 productNameInput.value = product.product_name;
+                // Détecter automatiquement la catégorie
+                detectAndSetCategory(product.product_name, 'productCategory');
             }
             
             showStatusMessage('Informations récupérées', 'success');
@@ -690,6 +926,13 @@ function showProductForm() {
         const productNameInput = document.getElementById('productName');
         productNameInput.focus();
         setupAutocomplete(productNameInput);
+        
+        // Détecter la catégorie quand l'utilisateur tape dans le champ nom
+        productNameInput.addEventListener('input', function() {
+            if (this.value.trim().length > 3) {
+                detectAndSetCategory(this.value, 'productCategory');
+            }
+        });
     }, 100);
 }
 
@@ -738,7 +981,8 @@ function setupAutocomplete(inputElement) {
         
         // Attendre 300ms avant de faire la requête (debounce)
         debounceTimer = setTimeout(async () => {
-            await fetchGoogleSuggestions(query, suggestionsContainer, inputElement);
+            // Utiliser Open Food Facts pour l'autocomplétion (gratuit, pas de clé API)
+            await fetchOpenFoodFactsSuggestions(query, suggestionsContainer, inputElement);
         }, 300);
     }, { once: false });
     
@@ -806,13 +1050,245 @@ function setupBarcodeLookup(inputElement) {
         if (barcode.length >= 8 && /^\d+$/.test(barcode)) {
             // Attendre 800ms après la dernière saisie (debounce plus long pour API)
             debounceTimer = setTimeout(async () => {
-                await fetchProductFromBarcode(barcode);
+                // Utiliser les APIs gratuites
+                await fetchProductFromFreeAPIs(barcode, false);
             }, 800);
         }
     });
 }
 
-// Récupérer les informations produit via UPCitemdb
+// Récupérer les informations produit via APIs gratuites (Datakick/GTINsearch + Open Food Facts)
+async function fetchProductFromFreeAPIs(barcode, showLoading = false) {
+    const productNameInput = document.getElementById('manualProductName') || document.getElementById('productName');
+    const categoryDetailsInput = document.getElementById('manualCategoryDetails') || document.getElementById('categoryDetails');
+    const imageUrlInput = document.getElementById('manualImageUrl');
+    const serialNumberInput = document.getElementById('manualSerialNumber') || document.getElementById('serialNumber');
+    const searchBtn = document.getElementById('searchBarcodeBtn');
+    
+    // Afficher un indicateur de chargement
+    if (showLoading) {
+        if (productNameInput) {
+            productNameInput.placeholder = 'Recherche des informations...';
+            productNameInput.disabled = true;
+        }
+        if (searchBtn) {
+            searchBtn.disabled = true;
+            searchBtn.classList.add('loading');
+        }
+        showStatusMessage('Recherche des informations produit...', 'info');
+    }
+    
+    try {
+        // Essayer d'abord Datakick/GTINsearch (gratuit, pas de clé API)
+        try {
+            const gtinUrl = `https://gtinsearch.org/api?gtin=${encodeURIComponent(barcode)}`;
+            const response = await fetch(gtinUrl, {
+                method: 'GET',
+                mode: 'cors',
+                cache: 'no-cache',
+                headers: {
+                    'Accept': 'application/json'
+                },
+                signal: AbortSignal.timeout(5000)
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                
+                if (data && data.name) {
+                    // Remplir les champs avec les données de GTINsearch
+                    if (productNameInput) {
+                        productNameInput.value = data.name || '';
+                        productNameInput.disabled = false;
+                        productNameInput.placeholder = 'Ex: iPhone 15 Pro';
+                        
+                        const categoryInput = document.getElementById('manualProductCategory') || document.getElementById('productCategory');
+                        if (categoryInput) {
+                            detectAndSetCategory(data.name, categoryInput.id);
+                        }
+                    }
+                    
+                    if (categoryDetailsInput && data.description) {
+                        categoryDetailsInput.value = data.description;
+                    }
+                    
+                    if (imageUrlInput && data.image) {
+                        imageUrlInput.value = data.image;
+                        
+                        const imageContainer = document.getElementById('manualImageContainer') || document.getElementById('productImageContainer');
+                        const img = document.getElementById('manualProductImage') || document.getElementById('productImage');
+                        const placeholder = document.getElementById('manualImagePlaceholder') || document.getElementById('imagePlaceholder');
+                        
+                        if (imageContainer && img && placeholder) {
+                            imageContainer.style.display = 'block';
+                            loadImageWithProxy(img, data.image, placeholder);
+                        }
+                    }
+                    
+                    if (searchBtn) {
+                        searchBtn.disabled = false;
+                        searchBtn.classList.remove('loading');
+                    }
+                    
+                    showStatusMessage('✅ Informations produit récupérées avec succès!', 'success');
+                    setTimeout(() => {
+                        showStatusMessage('', '');
+                    }, 3000);
+                    return;
+                }
+            }
+        } catch (gtinError) {
+            console.log('GTINsearch non disponible, essai Open Food Facts');
+        }
+        
+        // Essayer Open Food Facts (gratuit, pas de clé API)
+        try {
+            const offUrl = `https://world.openfoodfacts.org/api/v0/product/${barcode}.json`;
+            const response = await fetch(offUrl, {
+                method: 'GET',
+                mode: 'cors',
+                cache: 'no-cache',
+                signal: AbortSignal.timeout(5000)
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                
+                if (data.status === 1 && data.product) {
+                    const product = data.product;
+                    
+                    if (productNameInput) {
+                        const name = product.product_name || product.product_name_fr || '';
+                        productNameInput.value = name;
+                        productNameInput.disabled = false;
+                        productNameInput.placeholder = 'Ex: iPhone 15 Pro';
+                        
+                        const categoryInput = document.getElementById('manualProductCategory') || document.getElementById('productCategory');
+                        if (categoryInput && name) {
+                            detectAndSetCategory(name, categoryInput.id);
+                        }
+                    }
+                    
+                    if (categoryDetailsInput) {
+                        const details = product.categories || product.categories_tags?.join(', ') || '';
+                        if (details) {
+                            categoryDetailsInput.value = details;
+                        }
+                    }
+                    
+                    if (imageUrlInput) {
+                        const imageUrl = product.image_url || product.image_front_url || product.image_small_url || '';
+                        if (imageUrl) {
+                            imageUrlInput.value = imageUrl;
+                            
+                            const imageContainer = document.getElementById('manualImageContainer') || document.getElementById('productImageContainer');
+                            const img = document.getElementById('manualProductImage') || document.getElementById('productImage');
+                            const placeholder = document.getElementById('manualImagePlaceholder') || document.getElementById('imagePlaceholder');
+                            
+                            if (imageContainer && img && placeholder) {
+                                imageContainer.style.display = 'block';
+                                loadImageWithProxy(img, imageUrl, placeholder);
+                            }
+                        }
+                    }
+                    
+                    if (searchBtn) {
+                        searchBtn.disabled = false;
+                        searchBtn.classList.remove('loading');
+                    }
+                    
+                    showStatusMessage('✅ Informations produit récupérées avec succès!', 'success');
+                    setTimeout(() => {
+                        showStatusMessage('', '');
+                    }, 3000);
+                    return;
+                }
+            }
+        } catch (offError) {
+            console.log('Open Food Facts non disponible');
+        }
+        
+        // Si aucune API gratuite n'a fonctionné, utiliser l'ancienne méthode UPCitemdb
+        return await fetchProductFromBarcode(barcode, showLoading);
+        
+    } catch (error) {
+        console.error('Erreur lors de la récupération via APIs gratuites:', error);
+        // Fallback sur l'ancienne méthode
+        return await fetchProductFromBarcode(barcode, showLoading);
+    } finally {
+        if (searchBtn) {
+            searchBtn.disabled = false;
+            searchBtn.classList.remove('loading');
+        }
+    }
+}
+
+// Rechercher un code-barres depuis un nom de produit via APIs gratuites
+async function searchBarcodeFromProductNameFree(productName, nameInputElement) {
+    if (!productName || productName.trim() === '') {
+        return;
+    }
+    
+    const serialNumberInput = document.getElementById('manualSerialNumber');
+    const searchBtn = document.getElementById('searchBarcodeBtn');
+    
+    // Afficher un indicateur de chargement
+    if (nameInputElement) {
+        nameInputElement.disabled = true;
+        nameInputElement.placeholder = 'Recherche du code-barres...';
+    }
+    if (searchBtn) {
+        searchBtn.disabled = true;
+        searchBtn.classList.add('loading');
+    }
+    showStatusMessage('Recherche du code-barres...', 'info');
+    
+    try {
+        // Utiliser Open Food Facts pour rechercher par nom
+        const searchUrl = `https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(productName)}&search_simple=1&action=process&json=1&page_size=1`;
+        
+        const response = await fetch(searchUrl, {
+            method: 'GET',
+            mode: 'cors',
+            cache: 'no-cache',
+            signal: AbortSignal.timeout(5000),
+            headers: {
+                'Accept': 'application/json'
+            }
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            
+            if (data && data.products && Array.isArray(data.products) && data.products.length > 0) {
+                const product = data.products[0];
+                const code = product.code || product._id || null;
+                
+                if (code) {
+                    if (serialNumberInput) {
+                        serialNumberInput.value = code;
+                    }
+                    
+                    // Détecter automatiquement la catégorie
+                    if (nameInputElement && nameInputElement.value) {
+                        detectAndSetCategory(nameInputElement.value, 'manualProductCategory');
+                    }
+                    
+                    // Récupérer les détails complets
+                    await fetchProductFromFreeAPIs(code, false);
+                    return;
+                }
+            }
+        }
+    } catch (error) {
+        console.error('Erreur lors de la recherche Open Food Facts:', error);
+    }
+    
+    // Fallback sur l'ancienne méthode UPCitemdb
+    return await searchBarcodeFromProductName(productName, nameInputElement);
+}
+
+// Récupérer les informations produit via UPCitemdb (fallback)
 async function fetchProductFromBarcode(barcode, showLoading = false) {
     const productNameInput = document.getElementById('manualProductName');
     const categoryDetailsInput = document.getElementById('manualCategoryDetails');
@@ -855,14 +1331,21 @@ async function fetchProductFromBarcode(barcode, showLoading = false) {
         
         for (const proxy of proxies) {
             try {
+                // Créer un AbortController pour le timeout
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 secondes timeout
+                
                 const proxyResponse = await fetch(proxy.url, {
                     method: 'GET',
                     mode: 'cors',
                     cache: 'no-cache',
+                    signal: controller.signal,
                     headers: {
                         'Accept': 'application/json'
                     }
                 });
+                
+                clearTimeout(timeoutId);
                 
                 if (proxyResponse.ok) {
                     let responseText;
@@ -910,7 +1393,7 @@ async function fetchProductFromBarcode(barcode, showLoading = false) {
                     }
                 }
             } catch (proxyError) {
-                // Essayer le proxy suivant silencieusement
+                // Ignorer toutes les erreurs (timeout, CORS, réseau, etc.)
                 continue;
             }
         }
@@ -931,6 +1414,9 @@ async function fetchProductFromBarcode(barcode, showLoading = false) {
                 productNameInput.value = productName;
                 productNameInput.disabled = false;
                 productNameInput.placeholder = 'Ex: iPhone 15 Pro';
+                
+                // Détecter automatiquement la catégorie
+                detectAndSetCategory(productName, 'manualProductCategory');
             }
             
             if (categoryDetailsInput) {
@@ -998,6 +1484,48 @@ async function fetchProductFromBarcode(barcode, showLoading = false) {
 }
 
 // Récupérer les suggestions Google
+// Récupérer les suggestions via Open Food Facts (gratuit, pas de clé API)
+async function fetchOpenFoodFactsSuggestions(query, container, inputElement) {
+    try {
+        // Utiliser l'API Open Food Facts pour rechercher des produits
+        const searchUrl = `https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(query)}&search_simple=1&action=process&json=1&page_size=8`;
+        
+        const response = await fetch(searchUrl, {
+            method: 'GET',
+            mode: 'cors',
+            cache: 'no-cache',
+            headers: {
+                'Accept': 'application/json'
+            },
+            signal: AbortSignal.timeout(5000)
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            
+            if (data && data.products && Array.isArray(data.products) && data.products.length > 0) {
+                const suggestions = data.products.map(product => {
+                    const name = product.product_name || product.product_name_fr || '';
+                    const brand = product.brands || '';
+                    return brand && name ? `${brand} ${name}` : name || brand || '';
+                }).filter(name => name.length > 0);
+                
+                if (suggestions.length > 0) {
+                    displaySuggestions(suggestions, container, inputElement);
+                    return;
+                }
+            }
+        }
+    } catch (error) {
+        // En cas d'erreur, essayer Google Suggest comme fallback
+        console.log('Open Food Facts non disponible, fallback sur Google Suggest');
+    }
+    
+    // Fallback sur Google Suggest si Open Food Facts ne fonctionne pas
+    await fetchGoogleSuggestions(query, container, inputElement);
+}
+
+// Récupérer les suggestions Google (fallback)
 async function fetchGoogleSuggestions(query, container, inputElement) {
     try {
         // Utiliser l'API Google Suggest avec proxy CORS
@@ -1029,7 +1557,8 @@ async function fetchGoogleSuggestions(query, container, inputElement) {
                     cache: 'no-cache',
                     headers: {
                         'Accept': 'application/json'
-                    }
+                    },
+                    signal: AbortSignal.timeout(5000) // Timeout de 5 secondes
                 });
                 
                 if (response.ok) {
@@ -1079,7 +1608,8 @@ async function fetchGoogleSuggestions(query, container, inputElement) {
                     }
                 }
             } catch (proxyError) {
-                // Essayer le proxy suivant silencieusement
+                // Ignorer toutes les erreurs (timeout, CORS, réseau, etc.)
+                // Ne pas logger pour éviter le spam dans la console
                 continue;
             }
         }
@@ -1124,7 +1654,8 @@ function displaySuggestions(suggestions, container, inputElement) {
             
             // Si c'est le champ nom du produit dans la saisie manuelle, rechercher automatiquement le code-barres
             if (inputElement.id === 'manualProductName') {
-                await searchBarcodeFromProductName(value, inputElement);
+                // Utiliser les APIs gratuites pour rechercher le code-barres
+                await searchBarcodeFromProductNameFree(value, inputElement);
             }
         });
         
@@ -1137,7 +1668,7 @@ function displaySuggestions(suggestions, container, inputElement) {
     container.style.display = 'block';
 }
 
-// Rechercher le code-barres depuis le nom du produit (via UPCitemdb search)
+// Rechercher le code-barres depuis le nom du produit (via UPCitemdb search - fallback)
 async function searchBarcodeFromProductName(productName, nameInputElement) {
     if (!productName || productName.trim() === '') {
         return;
@@ -1180,14 +1711,21 @@ async function searchBarcodeFromProductName(productName, nameInputElement) {
         
         for (const proxy of proxies) {
             try {
+                // Créer un AbortController pour le timeout
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 secondes timeout
+                
                 const proxyResponse = await fetch(proxy.url, {
                     method: 'GET',
                     mode: 'cors',
                     cache: 'no-cache',
+                    signal: controller.signal,
                     headers: {
                         'Accept': 'application/json'
                     }
                 });
+                
+                clearTimeout(timeoutId);
                 
                 if (proxyResponse.ok) {
                     let responseText;
@@ -1236,7 +1774,7 @@ async function searchBarcodeFromProductName(productName, nameInputElement) {
                     }
                 }
             } catch (proxyError) {
-                // Essayer le proxy suivant silencieusement
+                // Ignorer toutes les erreurs (timeout, CORS, réseau, etc.)
                 continue;
             }
         }
@@ -1252,8 +1790,14 @@ async function searchBarcodeFromProductName(productName, nameInputElement) {
                     serialNumberInput.value = ean;
                 }
                 
+                // Détecter automatiquement la catégorie depuis le nom du produit
+                if (nameInputElement && nameInputElement.value) {
+                    detectAndSetCategory(nameInputElement.value, 'manualProductCategory');
+                }
+                
                 // Étape 2: Récupérer les caractéristiques complètes via lookup
-                await fetchProductFromBarcode(ean, false);
+                // Utiliser les APIs gratuites
+                await fetchProductFromFreeAPIs(ean, false);
             } else {
                 throw new Error('Code-barres non trouvé');
             }
@@ -1310,20 +1854,47 @@ function saveItemToDashboard(itemData) {
     const existingIndex = items.findIndex(item => item.serialNumber === itemData.serialNumber);
     
     if (existingIndex !== -1) {
-        // Item existe déjà, augmenter la quantité
-        items[existingIndex].quantity = (items[existingIndex].quantity || 1) + quantityToAdd;
-        items[existingIndex].lastUpdated = new Date().toISOString();
+        // Item existe déjà, mettre à jour (quantité ou autres champs)
+        const existingItem = items[existingIndex];
+        
+        // Mettre à jour tous les champs fournis
+        Object.keys(itemData).forEach(key => {
+            if (itemData[key] !== undefined && itemData[key] !== null && key !== 'quantity') {
+                existingItem[key] = itemData[key];
+            }
+        });
+        
+        // Augmenter la quantité si spécifiée
+        if (quantityToAdd > 0) {
+            existingItem.quantity = (existingItem.quantity || 1) + quantityToAdd;
+        }
+        
+        // Mettre à jour le timestamp de modification
+        existingItem.lastUpdated = new Date().toISOString();
+        
+        // S'assurer que createdAt existe (pour les anciens items)
+        if (!existingItem.createdAt) {
+            existingItem.createdAt = existingItem.lastUpdated;
+        }
     } else {
         // Nouvel item, ajouter avec la quantité spécifiée
+        const now = new Date().toISOString();
         items.push({
             ...itemData,
             quantity: quantityToAdd,
-            createdAt: new Date().toISOString(),
-            lastUpdated: new Date().toISOString()
+            createdAt: now,
+            lastUpdated: now
         });
     }
     
     localStorage.setItem('dashboardItems', JSON.stringify(items));
+    
+    // Déclencher un événement personnalisé pour notifier les autres onglets
+    // Note: L'événement storage ne se déclenche pas dans le même onglet, donc on utilise un CustomEvent
+    window.dispatchEvent(new CustomEvent('dashboardItemsChanged', {
+        detail: { items }
+    }));
+    
     console.log('Item sauvegardé dans le dashboard:', itemData);
 }
 
@@ -1333,8 +1904,14 @@ async function sendToWebhook() {
     const productName = document.getElementById('productName').value.trim();
     const serialNumber = document.getElementById('serialNumber').value.trim();
     const productQty = parseInt(document.getElementById('productQty').value) || 1;
-    const productType = document.getElementById('productType').value;
+    const productCategory = document.getElementById('productCategory').value;
     const categoryDetails = document.getElementById('categoryDetails').value.trim();
+    
+    if (!productCategory) {
+        showStatusMessage('La catégorie est obligatoire', 'error');
+        document.getElementById('productCategory').focus();
+        return;
+    }
     
     if (!productName) {
         showStatusMessage('Le nom du produit est obligatoire', 'error');
@@ -1354,19 +1931,17 @@ async function sendToWebhook() {
         return;
     }
     
-    if (!productType) {
-        showStatusMessage('Le type est obligatoire', 'error');
-        document.getElementById('productType').focus();
-        return;
-    }
-    
     const url = webhookUrl || document.getElementById('webhookUrl').value.trim() || DEFAULT_WEBHOOK_URL;
     
     try {
         showStatusMessage('Envoi des données au webhook...', 'info');
 
         const productImage = document.getElementById('productImage');
-        const imageUrl = productImage.classList.contains('show') ? productImage.src : '';
+        const capturedImageData = document.getElementById('capturedImageData');
+        // Priorité à l'image capturée/uploadée, sinon l'image chargée depuis l'API
+        const imageUrl = capturedImageData && capturedImageData.value 
+            ? capturedImageData.value 
+            : (productImage.classList.contains('show') ? productImage.src : '');
 
         const payload = {
             timestamp: new Date().toISOString(),
@@ -1374,7 +1949,7 @@ async function sendToWebhook() {
                 name: productName,
                 serialNumber: serialNumber,
                 quantity: productQty,
-                type: productType,
+                category: productCategory,
                 categoryDetails: categoryDetails || null,
                 image: imageUrl || null,
                 scannedCode: currentScannedCode || serialNumber
@@ -1386,7 +1961,7 @@ async function sendToWebhook() {
             name: productName,
             serialNumber: serialNumber,
             quantity: productQty,
-            type: productType,
+            category: productCategory,
             categoryDetails: categoryDetails || null,
             image: imageUrl || null,
             scannedCode: currentScannedCode || serialNumber
@@ -1446,6 +2021,16 @@ function scanAnother() {
     document.getElementById('productImage').classList.remove('show');
     document.getElementById('imagePlaceholder').classList.remove('hidden');
     document.getElementById('imagePlaceholder').textContent = 'Image en chargement...';
+    
+    // Réinitialiser l'image uploadée/capturée
+    const imageFileInput = document.getElementById('imageFileInput');
+    const capturedImageData = document.getElementById('capturedImageData');
+    if (imageFileInput) imageFileInput.value = '';
+    if (capturedImageData) capturedImageData.value = '';
+    
+    // Arrêter la caméra si elle est active
+    stopCamera();
+    
     showStatusMessage('', '');
 }
 

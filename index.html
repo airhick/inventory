@@ -12,6 +12,9 @@
     <div class="login-container" id="loginContainer">
         <div class="login-box">
             <header>
+                <div style="display: flex; align-items: center; justify-content: center; margin-bottom: 20px;">
+                    <img src="logo-globalvision.png" alt="GlobalVision Communication" style="height: 50px; width: auto;">
+                </div>
                 <h1>Barcode Scanner</h1>
                 <div style="margin-top: 8px; font-size: 14px; color: #666; font-weight: 400;">
                     Authentication Required
@@ -39,6 +42,9 @@
     <!-- Contenu principal (masqué jusqu'à la connexion) -->
     <div class="container" id="mainContainer" style="display: none;">
         <header>
+            <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px;">
+                <img src="logo-globalvision.png" alt="GlobalVision Communication" style="height: 50px; width: auto;">
+            </div>
             <h1>Barcode Scanner</h1>
             <div style="margin-top: 8px; font-size: 14px; color: #666; font-weight: 400;">
                 Scan Mode: Active
@@ -90,19 +96,30 @@
                     </small>
                 </div>
 
+
                 <div class="form-group">
-                    <label for="manualProductType">Type <span class="required">*</span></label>
-                    <select id="manualProductType" name="manualProductType" required>
-                        <option value="">Sélectionner un type</option>
-                        <option value="location">Location</option>
-                        <option value="vente">Vente</option>
-                        <option value="utilisation">Utilisation</option>
-                    </select>
+                    <label for="manualProductCategory">Catégorie <span class="required">*</span></label>
+                    <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                        <select id="manualProductCategory" name="manualProductCategory" required style="flex: 1; min-width: 200px;">
+                            <option value="">Sélectionner une catégorie</option>
+                            <option value="drone">Drone</option>
+                            <option value="video">Video</option>
+                            <option value="audio">Audio</option>
+                            <option value="streaming">Streaming</option>
+                            <option value="robot">Robot</option>
+                            <option value="autre">Autre</option>
+                        </select>
+                        <input type="text" id="manualCustomCategoryInput" placeholder="Nouvelle catégorie" style="flex: 1; min-width: 150px; display: none;">
+                        <button type="button" id="manualAddCategoryBtn" class="btn btn-outline" style="white-space: nowrap; display: none;">Ajouter</button>
+                    </div>
+                    <small style="color: #666; font-size: 12px; margin-top: 4px; display: block;">
+                        La catégorie est détectée automatiquement ou peut être ajoutée manuellement
+                    </small>
                 </div>
 
                 <div class="form-group">
-                    <label for="manualCategoryDetails">Catégorie / Détails</label>
-                    <textarea id="manualCategoryDetails" name="manualCategoryDetails" rows="3" placeholder="Ex: Électronique, Smartphone, etc. (optionnel)"></textarea>
+                    <label for="manualCategoryDetails">Détails</label>
+                    <textarea id="manualCategoryDetails" name="manualCategoryDetails" rows="3" placeholder="Ex: Description détaillée, caractéristiques, etc. (optionnel)"></textarea>
                 </div>
 
                 <div class="form-group">
@@ -125,6 +142,20 @@
                 <div class="image-placeholder" id="imagePlaceholder">
                     <span>Image en chargement...</span>
                 </div>
+                <div class="image-upload-controls" style="margin-top: 12px; display: flex; gap: 8px; justify-content: center;">
+                    <label for="imageFileInput" class="btn btn-outline" style="cursor: pointer; margin: 0;">
+                        📷 Choisir une image
+                        <input type="file" id="imageFileInput" accept="image/*" style="display: none;">
+                    </label>
+                    <button type="button" id="takePhotoBtn" class="btn btn-outline">📸 Prendre une photo</button>
+                    <input type="hidden" id="capturedImageData">
+                </div>
+                <video id="cameraVideo" style="display: none; width: 100%; max-width: 400px; border-radius: 12px; margin-top: 12px;"></video>
+                <div id="cameraControls" style="display: none; margin-top: 12px; text-align: center;">
+                    <button type="button" id="capturePhotoBtn" class="btn btn-success">Capturer</button>
+                    <button type="button" id="cancelCameraBtn" class="btn btn-outline">Annuler</button>
+                </div>
+                <canvas id="photoCanvas" style="display: none;"></canvas>
             </div>
 
             <form id="productForm">
@@ -143,19 +174,27 @@
                     <input type="number" id="productQty" name="productQty" required min="1" value="1" placeholder="Quantité">
                 </div>
 
+
                 <div class="form-group">
-                    <label for="productType">Type <span class="required">*</span></label>
-                    <select id="productType" name="productType" required>
-                        <option value="">Sélectionner un type</option>
-                        <option value="location">Location</option>
-                        <option value="vente">Vente</option>
-                        <option value="utilisation">Utilisation</option>
-                    </select>
+                    <label for="productCategory">Catégorie <span class="required">*</span></label>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <select id="productCategory" name="productCategory" required>
+                            <option value="">Sélectionner une catégorie</option>
+                            <option value="drone">Drone</option>
+                            <option value="video">Video</option>
+                            <option value="audio">Audio</option>
+                            <option value="streaming">Streaming</option>
+                            <option value="robot">Robot</option>
+                            <option value="autre">Autre</option>
+                        </select>
+                        <input type="text" id="customCategoryInput" placeholder="Nouvelle catégorie" style="flex: 1; display: none;">
+                        <button type="button" id="addCategoryBtn" class="btn btn-outline" style="white-space: nowrap; display: none;">Ajouter</button>
+                    </div>
                 </div>
 
                 <div class="form-group">
-                    <label for="categoryDetails">Catégorie / Détails</label>
-                    <textarea id="categoryDetails" name="categoryDetails" rows="3" placeholder="Ex: Électronique, Smartphone, etc. (optionnel)"></textarea>
+                    <label for="categoryDetails">Détails</label>
+                    <textarea id="categoryDetails" name="categoryDetails" rows="3" placeholder="Ex: Description détaillée, caractéristiques, etc. (optionnel)"></textarea>
                 </div>
 
                 <div class="form-actions">

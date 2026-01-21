@@ -10,6 +10,9 @@
 <body>
     <div class="container">
         <header>
+            <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px;">
+                <img src="logo-globalvision.png" alt="GlobalVision Communication" style="height: 50px; width: auto;">
+            </div>
             <h1>Dashboard</h1>
             <div style="margin-top: 8px; font-size: 14px; color: #666; font-weight: 400;">
                 Items Registered: <span id="totalItems" style="font-weight: 600; color: #1a1a1a;">0</span>
@@ -19,7 +22,21 @@
         <div class="dashboard-controls">
             <a href="index.html" class="btn btn-outline">Retour au Scanner</a>
             <button id="exportCSVBtn" class="btn btn-primary">EXPORTER CSV</button>
-            <button id="clearAllBtn" class="btn btn-secondary">EFFACER TOUT</button>
+            <label for="importCSVInput" class="btn btn-primary" style="cursor: pointer; margin: 0;">
+                IMPORTER CSV
+                <input type="file" id="importCSVInput" accept=".csv" style="display: none;">
+            </label>
+            <div class="category-manager-dropdown" style="position: relative;">
+                <button id="manageCategoriesBtn" class="btn btn-outline">GÉRER CATÉGORIES</button>
+                <div id="categoryDropdown" class="category-dropdown" style="display: none;">
+                    <div class="category-dropdown-header">Catégories enregistrées</div>
+                    <div id="categoryList" class="category-list"></div>
+                    <div class="category-dropdown-footer">
+                        <input type="text" id="newCategoryInput" placeholder="Nouvelle catégorie" style="flex: 1; padding: 8px; border: 1px solid #e5e5e5; border-radius: 8px;">
+                        <button id="addCategoryBtn" class="btn btn-primary" style="margin-left: 8px; padding: 8px 16px;">Ajouter</button>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <div class="search-section">
@@ -44,8 +61,8 @@
                             <span class="sort-icon" data-sort="quantity">↕</span>
                         </th>
                         <th>
-                            TYPE
-                            <span class="sort-icon" data-sort="type">↕</span>
+                            CATÉGORIE
+                            <span class="sort-icon" data-sort="category">↕</span>
                         </th>
                         <th>DÉTAILS</th>
                         <th>

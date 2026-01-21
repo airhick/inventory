@@ -316,6 +316,43 @@ header h1 {
     padding-bottom: 16px;
 }
 
+.image-upload-controls {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-top: 12px;
+}
+
+.image-upload-controls label.btn {
+    margin: 0;
+    cursor: pointer;
+}
+
+.image-upload-controls input[type="file"] {
+    display: none;
+}
+
+#cameraVideo {
+    width: 100%;
+    max-width: 400px;
+    border-radius: 12px;
+    margin-top: 12px;
+    background: #000;
+}
+
+#cameraControls {
+    margin-top: 12px;
+    text-align: center;
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+}
+
+#photoCanvas {
+    display: none;
+}
+
 .product-image-container {
     width: 100%;
     max-width: 320px;
@@ -330,6 +367,7 @@ header h1 {
     justify-content: center;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
     position: relative;
+    flex-direction: column;
 }
 
 .product-image-container img {
