@@ -18,8 +18,8 @@ npm-debug.log*
 *.tmp
 *.temp
 
-# Netlify
-.netlify/
+# GitHub Pages
+.sass-cache/
 
 # Environnement
 .env
