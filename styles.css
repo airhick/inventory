@@ -6,8 +6,8 @@
 
 body {
     font-family: 'Courier New', 'Monaco', 'Menlo', monospace;
-    background: #000000;
-    color: #ffffff;
+    background: #ffffff;
+    color: #000000;
     min-height: 100vh;
     padding: 20px;
     line-height: 1.6;
@@ -91,8 +91,8 @@ body {
 .login-error {
     padding: 12px;
     border: 2px solid #000000;
-    background: #000000;
-    color: #ffffff;
+    background: #ffffff;
+    color: #000000;
     font-family: 'Courier New', monospace;
     text-align: center;
     display: none;
@@ -152,6 +152,16 @@ header h1 {
 #reader {
     width: 100%;
     min-height: 400px;
+    position: relative;
+}
+
+#reader video {
+    width: 100%;
+    height: auto;
+}
+
+#reader canvas {
+    display: none;
 }
 
 .controls {
@@ -219,8 +229,8 @@ header h1 {
 }
 
 .manual-input-section {
-    background: #000000;
-    color: #ffffff;
+    background: #ffffff;
+    color: #000000;
     padding: 20px;
     border: 2px solid #000000;
     margin-bottom: 30px;
@@ -231,24 +241,25 @@ header h1 {
 
 .manual-input-section::before {
     content: '$ ';
-    color: #ffffff;
+    color: #000000;
     font-weight: bold;
 }
 
 #manualCodeInput {
     flex: 1;
     padding: 12px;
-    border: 2px solid #ffffff;
-    background: #000000;
-    color: #ffffff;
+    border: 2px solid #000000;
+    background: #ffffff;
+    color: #000000;
     font-size: 1em;
     font-family: 'Courier New', monospace;
 }
 
 #manualCodeInput:focus {
     outline: none;
-    border-color: #ffffff;
-    box-shadow: 0 0 0 2px #ffffff;
+    border-color: #000000;
+    box-shadow: 4px 4px 0px #000000;
+    transform: translate(-2px, -2px);
 }
 
 #manualCodeInput::placeholder {
@@ -412,8 +423,8 @@ header h1 {
 }
 
 .status-message.error {
-    background: #000000;
-    color: #ffffff;
+    background: #ffffff;
+    color: #000000;
     border-color: #000000;
     display: block;
 }
@@ -426,15 +437,15 @@ header h1 {
 }
 
 .config-section {
-    background: #000000;
-    color: #ffffff;
+    background: #ffffff;
+    color: #000000;
     padding: 20px;
     border: 2px solid #000000;
     margin-top: 30px;
 }
 
 .config-section h3 {
-    color: #ffffff;
+    color: #000000;
     margin-bottom: 15px;
     font-size: 1.1em;
     text-transform: uppercase;
@@ -449,9 +460,9 @@ header h1 {
 #webhookUrl {
     width: 100%;
     padding: 12px;
-    border: 2px solid #ffffff;
-    background: #000000;
-    color: #ffffff;
+    border: 2px solid #000000;
+    background: #ffffff;
+    color: #000000;
     font-size: 1em;
     font-family: 'Courier New', monospace;
     margin-bottom: 10px;
@@ -459,8 +470,9 @@ header h1 {
 
 #webhookUrl:focus {
     outline: none;
-    border-color: #ffffff;
-    box-shadow: 0 0 0 2px #ffffff;
+    border-color: #000000;
+    box-shadow: 4px 4px 0px #000000;
+    transform: translate(-2px, -2px);
 }
 
 #webhookUrl::placeholder {
@@ -470,10 +482,12 @@ header h1 {
 .webhook-status {
     margin-top: 10px;
     padding: 10px;
-    border: 2px solid #ffffff;
+    border: 2px solid #000000;
     font-size: 0.9em;
     display: none;
     font-family: 'Courier New', monospace;
+    background: #ffffff;
+    color: #000000;
 }
 
 .webhook-status::before {
@@ -483,7 +497,7 @@ header h1 {
 .webhook-status.saved {
     background: #ffffff;
     color: #000000;
-    border-color: #ffffff;
+    border-color: #000000;
     display: block;
 }
 
@@ -526,5 +540,5 @@ header h1 {
 .manual-input-section::after {
     content: '_';
     animation: blink 1s step-end infinite;
-    color: #ffffff;
+    color: #000000;
 }

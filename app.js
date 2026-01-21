@@ -1,5 +1,6 @@
 // Configuration et état de l'application
 let html5QrcodeScanner = null;
+let quaggaScanner = null;
 let isScanning = false;
 let currentScannedCode = null;
 const DEFAULT_WEBHOOK_URL = 'https://n8n.goreview.fr/webhook-test/acff1955-9ed2-4e48-b989-5a17d78b4452';
@@ -100,54 +101,155 @@ async function startScan() {
     if (isScanning) return;
 
     try {
-        html5QrcodeScanner = new Html5Qrcode("reader");
-        
-        await html5QrcodeScanner.start(
-            { facingMode: "environment" },
-            {
-                fps: 10,
-                qrbox: { width: 250, height: 250 },
-                aspectRatio: 1.0
-            },
-            onScanSuccess,
-            onScanError
-        );
-
-        isScanning = true;
-        document.getElementById('startScanBtn').disabled = true;
-        document.getElementById('stopScanBtn').disabled = false;
-        hideManualInput();
-        hideProductForm();
+        // Utiliser QuaggaJS pour les codes-barres (EAN, UPC, Code128, etc.)
+        if (typeof Quagga !== 'undefined') {
+            await startQuaggaScan();
+        } else {
+            // Fallback sur html5-qrcode si Quagga n'est pas disponible
+            await startQRCodeScan();
+        }
     } catch (err) {
         console.error("Erreur lors du démarrage du scan:", err);
         showStatusMessage('Erreur: Impossible d\'accéder à la caméra. Vérifiez les permissions.', 'error');
     }
 }
 
+// Scanner avec QuaggaJS (codes-barres)
+function startQuaggaScan() {
+    return new Promise((resolve, reject) => {
+        Quagga.init({
+            inputStream: {
+                name: "Live",
+                type: "LiveStream",
+                target: document.querySelector('#reader'),
+                constraints: {
+                    width: 640,
+                    height: 480,
+                    facingMode: "environment"
+                }
+            },
+            locator: {
+                patchSize: "medium",
+                halfSample: true
+            },
+            numOfWorkers: 2,
+            decoder: {
+                readers: [
+                    "ean_reader",
+                    "ean_8_reader",
+                    "code_128_reader",
+                    "code_39_reader",
+                    "code_39_vin_reader",
+                    "codabar_reader",
+                    "upc_reader",
+                    "upc_e_reader",
+                    "i2of5_reader"
+                ]
+            },
+            locate: true
+        }, function(err) {
+            if (err) {
+                console.error("Erreur Quagga:", err);
+                // Fallback sur html5-qrcode
+                startQRCodeScan().then(resolve).catch(reject);
+                return;
+            }
+            console.log("Quagga initialisé avec succès");
+            Quagga.start();
+            
+            // Détecter les codes-barres
+            Quagga.onDetected(function(result) {
+                console.log("=== Code-barres détecté ===");
+                console.log("Résultat complet:", result);
+                const code = result.codeResult ? result.codeResult.code : null;
+                console.log("Code extrait:", code);
+                if (result.codeResult) {
+                    console.log("Format:", result.codeResult.format);
+                }
+                if (code && code.trim() !== '') {
+                    stopScan();
+                    processScannedCode(code);
+                } else {
+                    console.warn("Code vide ou invalide détecté");
+                }
+            });
+            
+            isScanning = true;
+            document.getElementById('startScanBtn').disabled = true;
+            document.getElementById('stopScanBtn').disabled = false;
+            hideManualInput();
+            hideProductForm();
+            resolve();
+        });
+    });
+}
+
+// Scanner avec html5-qrcode (QR codes)
+async function startQRCodeScan() {
+    html5QrcodeScanner = new Html5Qrcode("reader");
+    
+    await html5QrcodeScanner.start(
+        { facingMode: "environment" },
+        {
+            fps: 10,
+            qrbox: { width: 250, height: 250 },
+            aspectRatio: 1.0,
+            supportedScanTypes: [Html5QrcodeScanType.SCAN_TYPE_CAMERA]
+        },
+        onScanSuccess,
+        onScanError
+    );
+
+    isScanning = true;
+    document.getElementById('startScanBtn').disabled = true;
+    document.getElementById('stopScanBtn').disabled = false;
+    hideManualInput();
+    hideProductForm();
+}
+
 // Arrêter le scan
 function stopScan() {
-    if (html5QrcodeScanner && isScanning) {
-        html5QrcodeScanner.stop().then(() => {
-            html5QrcodeScanner.clear();
-            isScanning = false;
-            document.getElementById('startScanBtn').disabled = false;
-            document.getElementById('stopScanBtn').disabled = true;
-        }).catch(err => {
-            console.error("Erreur lors de l'arrêt du scan:", err);
-        });
+    if (isScanning) {
+        // Arrêter Quagga si actif
+        if (typeof Quagga !== 'undefined' && Quagga.initialized) {
+            try {
+                Quagga.stop();
+                quaggaScanner = null;
+            } catch (err) {
+                console.error("Erreur arrêt Quagga:", err);
+            }
+        }
+        
+        // Arrêter html5-qrcode si actif
+        if (html5QrcodeScanner) {
+            html5QrcodeScanner.stop().then(() => {
+                html5QrcodeScanner.clear();
+                html5QrcodeScanner = null;
+            }).catch(err => {
+                console.error("Erreur arrêt html5-qrcode:", err);
+            });
+        }
+        
+        isScanning = false;
+        document.getElementById('startScanBtn').disabled = false;
+        document.getElementById('stopScanBtn').disabled = true;
     }
 }
 
-// Callback de succès du scan
+// Callback de succès du scan (QR codes)
 async function onScanSuccess(decodedText, decodedResult) {
-    console.log("Code scanné:", decodedText);
+    console.log("QR Code scanné:", decodedText);
+    console.log("Résultat complet:", decodedResult);
     stopScan();
     await processScannedCode(decodedText);
 }
 
 // Callback d'erreur du scan
 function onScanError(errorMessage) {
-    // Ignorer les erreurs de scan continu
+    // Loguer seulement les erreurs importantes
+    if (errorMessage && !errorMessage.includes('NotFoundException')) {
+        console.log("Scan en cours...", errorMessage);
+    }
 }
 
 // Afficher/masquer la saisie manuelle
@@ -177,16 +279,31 @@ async function handleManualInput() {
 
 // Traiter le code scanné
 async function processScannedCode(code) {
-    currentScannedCode = code;
+    console.log("=== Traitement du code scanné ===");
+    console.log("Code reçu:", code);
+    
+    if (!code || code.trim() === '') {
+        console.error("Code vide ou invalide");
+        showStatusMessage('Code invalide. Veuillez réessayer.', 'error');
+        return;
+    }
+    
+    currentScannedCode = code.trim();
     
     // Remplir le numéro de série
-    document.getElementById('serialNumber').value = code;
+    const serialNumberInput = document.getElementById('serialNumber');
+    if (serialNumberInput) {
+        serialNumberInput.value = currentScannedCode;
+        console.log("Numéro de série rempli:", currentScannedCode);
+    } else {
+        console.error("Champ serialNumber non trouvé");
+    }
     
     // Afficher le formulaire
     showProductForm();
     
     // Récupérer l'image et les infos produit
-    await fetchProductImageAndInfo(code);
+    await fetchProductImageAndInfo(currentScannedCode);
 }
 
 // Récupérer l'image et les informations du produit
