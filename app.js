@@ -70,24 +70,15 @@ function handleLogin(e) {
 }
 
 function initializeApp() {
-    // Charger l'URL du webhook sauvegardée ou utiliser celle par défaut
-    if (webhookUrl) {
-        document.getElementById('webhookUrl').value = webhookUrl;
-        if (webhookUrl === DEFAULT_WEBHOOK_URL) {
-            showWebhookStatus('Webhook configuré par défaut', 'saved');
-        } else {
-            showWebhookStatus('Webhook sauvegardé', 'saved');
-        }
-    }
-
     // Event listeners
     document.getElementById('startScanBtn').addEventListener('click', startScan);
     document.getElementById('stopScanBtn').addEventListener('click', stopScan);
     document.getElementById('manualInputBtn').addEventListener('click', toggleManualInput);
     document.getElementById('submitManualBtn').addEventListener('click', handleManualInput);
+    document.getElementById('cancelManualBtn').addEventListener('click', hideManualInput);
+    document.getElementById('searchBarcodeBtn').addEventListener('click', handleManualBarcodeSearch);
     document.getElementById('sendWebhookBtn').addEventListener('click', sendToWebhook);
     document.getElementById('scanAnotherBtn').addEventListener('click', scanAnother);
-    document.getElementById('saveWebhookBtn').addEventListener('click', saveWebhook);
     
     // Validation du formulaire
     document.getElementById('productForm').addEventListener('submit', (e) => {
@@ -256,8 +247,23 @@ function onScanError(errorMessage) {
 function toggleManualInput() {
     const section = document.getElementById('manualInputSection');
     if (section.style.display === 'none') {
-        section.style.display = 'flex';
+        section.style.display = 'block';
         stopScan();
+        hideProductForm();
+        // Setup autocomplete pour le champ nom
+        setTimeout(() => {
+            const productNameInput = document.getElementById('manualProductName');
+            const serialNumberInput = document.getElementById('manualSerialNumber');
+            
+            if (productNameInput) {
+                setupAutocomplete(productNameInput);
+            }
+            
+            // Setup recherche automatique par code-barres
+            if (serialNumberInput) {
+                setupBarcodeLookup(serialNumberInput);
+            }
+        }, 100);
     } else {
         section.style.display = 'none';
     }
@@ -265,16 +271,123 @@ function toggleManualInput() {
 
 function hideManualInput() {
     document.getElementById('manualInputSection').style.display = 'none';
+    // Réinitialiser le formulaire
+    const manualForm = document.getElementById('manualForm');
+    if (manualForm) {
+        manualForm.reset();
+    }
+}
+
+// Recherche manuelle par code-barres (bouton)
+async function handleManualBarcodeSearch() {
+    const serialNumberInput = document.getElementById('manualSerialNumber');
+    if (!serialNumberInput) {
+        console.error('Champ serialNumber non trouvé');
+        return;
+    }
+    
+    const barcode = serialNumberInput.value.trim();
+    
+    if (!barcode) {
+        showStatusMessage('Veuillez entrer un code-barres', 'error');
+        serialNumberInput.focus();
+        return;
+    }
+    
+    if (!/^\d+$/.test(barcode) || barcode.length < 8) {
+        showStatusMessage('Code-barres invalide. Veuillez entrer un code-barres numérique d\'au moins 8 chiffres', 'error');
+        serialNumberInput.focus();
+        return;
+    }
+    
+    await fetchProductFromBarcode(barcode, true);
 }
 
 // Gérer la saisie manuelle
 async function handleManualInput() {
-    const code = document.getElementById('manualCodeInput').value.trim();
-    if (!code) {
-        showStatusMessage('Veuillez entrer un code', 'error');
+    const productName = document.getElementById('manualProductName').value.trim();
+    const serialNumber = document.getElementById('manualSerialNumber').value.trim();
+    const productType = document.getElementById('manualProductType').value;
+    const categoryDetails = document.getElementById('manualCategoryDetails').value.trim();
+    const imageUrl = document.getElementById('manualImageUrl').value.trim();
+    
+    // Validation
+    if (!productName) {
+        showStatusMessage('Le nom du produit est obligatoire', 'error');
+        document.getElementById('manualProductName').focus();
         return;
     }
-    await processScannedCode(code);
+    
+    if (!serialNumber) {
+        showStatusMessage('Le numéro de série est obligatoire', 'error');
+        document.getElementById('manualSerialNumber').focus();
+        return;
+    }
+    
+    if (!productType) {
+        showStatusMessage('Le type est obligatoire', 'error');
+        document.getElementById('manualProductType').focus();
+        return;
+    }
+    
+    // Sauvegarder dans le dashboard
+    saveItemToDashboard({
+        name: productName,
+        serialNumber: serialNumber,
+        type: productType,
+        categoryDetails: categoryDetails || null,
+        image: imageUrl || null,
+        scannedCode: serialNumber
+    });
+    
+    // Envoyer au webhook
+    await sendManualToWebhook({
+        name: productName,
+        serialNumber: serialNumber,
+        type: productType,
+        categoryDetails: categoryDetails || null,
+        image: imageUrl || null,
+        scannedCode: serialNumber
+    });
+    
+    // Masquer le formulaire et afficher un message de succès
+    hideManualInput();
+    showStatusMessage('✅ Item enregistré avec succès!', 'success');
+}
+
+// Envoyer les données manuelles au webhook
+async function sendManualToWebhook(itemData) {
+    const url = webhookUrl || DEFAULT_WEBHOOK_URL;
+    
+    try {
+        const payload = {
+            timestamp: new Date().toISOString(),
+            product: {
+                name: itemData.name,
+                serialNumber: itemData.serialNumber,
+                type: itemData.type,
+                categoryDetails: itemData.categoryDetails,
+                image: itemData.image,
+                scannedCode: itemData.scannedCode
+            }
+        };
+
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload)
+        });
+
+        if (response.ok) {
+            console.log('Données manuelles envoyées au webhook avec succès');
+        } else {
+            console.error('Erreur lors de l\'envoi au webhook:', response.status);
+        }
+    } catch (error) {
+        console.error("Erreur lors de l'envoi au webhook:", error);
+    }
 }
 
 // Traiter le code scanné
@@ -433,12 +546,479 @@ function showProductForm() {
     
     // Focus sur le champ nom produit
     setTimeout(() => {
-        document.getElementById('productName').focus();
+        const productNameInput = document.getElementById('productName');
+        productNameInput.focus();
+        setupAutocomplete(productNameInput);
     }, 100);
+}
+
+// Configuration de l'autocomplétion Google
+function setupAutocomplete(inputElement) {
+    if (!inputElement) {
+        console.error('Input element not found for autocomplete');
+        return;
+    }
+    
+    // Supprimer l'ancien conteneur s'il existe (pour éviter les doublons)
+    const existingContainer = inputElement.parentElement.querySelector('.suggestions-container');
+    if (existingContainer) {
+        existingContainer.remove();
+    }
+    
+    // Créer un nouveau conteneur de suggestions
+    const suggestionsContainer = document.createElement('div');
+    const containerId = 'suggestionsContainer_' + inputElement.id;
+    suggestionsContainer.id = containerId;
+    suggestionsContainer.className = 'suggestions-container';
+    
+    // S'assurer que le parent a position: relative pour le positionnement absolu
+    const parent = inputElement.parentElement;
+    if (getComputedStyle(parent).position === 'static') {
+        parent.style.position = 'relative';
+    }
+    
+    // Ajouter le conteneur après l'input
+    parent.appendChild(suggestionsContainer);
+    
+    let debounceTimer;
+    
+    // Ajouter l'event listener pour l'input
+    inputElement.addEventListener('input', function(e) {
+        const query = e.target.value.trim();
+        
+        // Effacer le timer précédent
+        clearTimeout(debounceTimer);
+        
+        // Masquer les suggestions si le champ est vide
+        if (query.length < 2) {
+            suggestionsContainer.style.display = 'none';
+            return;
+        }
+        
+        // Attendre 300ms avant de faire la requête (debounce)
+        debounceTimer = setTimeout(async () => {
+            await fetchGoogleSuggestions(query, suggestionsContainer, inputElement);
+        }, 300);
+    }, { once: false });
+    
+    // Masquer les suggestions quand on clique ailleurs
+    const clickHandler = (e) => {
+        if (!inputElement.contains(e.target) && !suggestionsContainer.contains(e.target)) {
+            suggestionsContainer.style.display = 'none';
+        }
+    };
+    document.addEventListener('click', clickHandler);
+    
+    // Gérer les touches clavier
+    inputElement.addEventListener('keydown', function(e) {
+        const suggestions = suggestionsContainer.querySelectorAll('.suggestion-item');
+        const selected = suggestionsContainer.querySelector('.suggestion-item.selected');
+        
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            if (selected) {
+                selected.classList.remove('selected');
+                const next = selected.nextElementSibling;
+                if (next) {
+                    next.classList.add('selected');
+                } else {
+                    suggestions[0]?.classList.add('selected');
+                }
+            } else {
+                suggestions[0]?.classList.add('selected');
+            }
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            if (selected) {
+                selected.classList.remove('selected');
+                const prev = selected.previousElementSibling;
+                if (prev) {
+                    prev.classList.add('selected');
+                } else {
+                    suggestions[suggestions.length - 1]?.classList.add('selected');
+                }
+            } else {
+                suggestions[suggestions.length - 1]?.classList.add('selected');
+            }
+        } else if (e.key === 'Enter' && selected) {
+            e.preventDefault();
+            selected.click();
+        } else if (e.key === 'Escape') {
+            suggestionsContainer.style.display = 'none';
+        }
+    }, { once: false });
+    
+    console.log('Autocomplete configuré pour:', inputElement.id);
+}
+
+// Configuration de la recherche automatique par code-barres (UPCitemdb)
+function setupBarcodeLookup(inputElement) {
+    let debounceTimer;
+    
+    inputElement.addEventListener('input', async (e) => {
+        const barcode = e.target.value.trim();
+        
+        // Effacer le timer précédent
+        clearTimeout(debounceTimer);
+        
+        // Si le code-barres fait au moins 8 caractères (codes-barres valides)
+        if (barcode.length >= 8 && /^\d+$/.test(barcode)) {
+            // Attendre 800ms après la dernière saisie (debounce plus long pour API)
+            debounceTimer = setTimeout(async () => {
+                await fetchProductFromBarcode(barcode);
+            }, 800);
+        }
+    });
+}
+
+// Récupérer les informations produit via UPCitemdb
+async function fetchProductFromBarcode(barcode, showLoading = false) {
+    const productNameInput = document.getElementById('manualProductName');
+    const categoryDetailsInput = document.getElementById('manualCategoryDetails');
+    const imageUrlInput = document.getElementById('manualImageUrl');
+    const searchBtn = document.getElementById('searchBarcodeBtn');
+    
+    // Afficher un indicateur de chargement
+    if (showLoading) {
+        if (productNameInput) {
+            productNameInput.placeholder = 'Recherche des informations...';
+            productNameInput.disabled = true;
+        }
+        if (searchBtn) {
+            searchBtn.disabled = true;
+            searchBtn.classList.add('loading');
+        }
+        showStatusMessage('Recherche des informations produit...', 'info');
+    }
+    
+    try {
+        // Utiliser un proxy CORS pour éviter les problèmes CORS
+        const apiUrl = `https://api.upcitemdb.com/prod/trial/lookup?upc=${barcode}`;
+        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(apiUrl)}`;
+        const response = await fetch(proxyUrl);
+        
+        if (response.ok) {
+            const responseText = await response.text();
+            let data;
+            try {
+                data = JSON.parse(responseText);
+            } catch (e) {
+                // Essayer d'extraire le JSON si nécessaire
+                const jsonMatch = responseText.match(/\{.*\}/s);
+                if (jsonMatch) {
+                    data = JSON.parse(jsonMatch[0]);
+                } else {
+                    throw new Error('Format de réponse invalide');
+                }
+            }
+            
+            // Vérifier si on a trouvé un produit
+            if (data && data.items && data.items.length > 0) {
+                const item = data.items[0];
+                
+                // Remplir automatiquement les champs
+                if (productNameInput) {
+                    const title = item.title || '';
+                    const brand = item.brand || '';
+                    const productName = brand && title ? `${brand} ${title}` : title || brand || '';
+                    productNameInput.value = productName;
+                    productNameInput.disabled = false;
+                    productNameInput.placeholder = 'Ex: iPhone 15 Pro';
+                }
+                
+                if (categoryDetailsInput) {
+                    const description = item.description || '';
+                    const category = item.category || '';
+                    const details = category ? `${category}${description ? ' - ' + description : ''}` : description;
+                    if (details) {
+                        categoryDetailsInput.value = details;
+                    }
+                }
+                
+                if (imageUrlInput && item.images && item.images.length > 0) {
+                    imageUrlInput.value = item.images[0];
+                    
+                    // Afficher l'image dans le conteneur
+                    const imageContainer = document.getElementById('manualImageContainer');
+                    const img = document.getElementById('manualProductImage');
+                    const placeholder = document.getElementById('manualImagePlaceholder');
+                    
+                    if (imageContainer && img && placeholder) {
+                        imageContainer.style.display = 'block';
+                        img.src = item.images[0];
+                        img.onload = () => {
+                            img.classList.add('show');
+                            placeholder.classList.add('hidden');
+                        };
+                        img.onerror = () => {
+                            img.classList.remove('show');
+                            placeholder.classList.remove('hidden');
+                            placeholder.textContent = 'Image non disponible';
+                        };
+                    }
+                }
+                
+                // Réactiver le champ nom si désactivé
+                if (productNameInput && productNameInput.disabled) {
+                    productNameInput.disabled = false;
+                    productNameInput.placeholder = 'Ex: iPhone 15 Pro';
+                }
+                
+                // Réactiver le champ nom si désactivé
+                if (productNameInput && productNameInput.disabled) {
+                    productNameInput.disabled = false;
+                    productNameInput.placeholder = 'Ex: iPhone 15 Pro';
+                }
+                
+                // Afficher un message de succès
+                showStatusMessage('✅ Informations produit récupérées avec succès!', 'success');
+                setTimeout(() => {
+                    showStatusMessage('', '');
+                }, 3000);
+            } else {
+                // Produit non trouvé
+                if (productNameInput) {
+                    productNameInput.disabled = false;
+                    productNameInput.placeholder = 'Ex: iPhone 15 Pro';
+                }
+                showStatusMessage('ℹ️ Produit non trouvé dans la base de données. Veuillez remplir manuellement.', 'info');
+                setTimeout(() => {
+                    showStatusMessage('', '');
+                }, 4000);
+            }
+        } else {
+            throw new Error('Erreur API');
+        }
+    } catch (error) {
+        console.error('Erreur lors de la récupération des informations produit:', error);
+        if (productNameInput) {
+            productNameInput.disabled = false;
+            productNameInput.placeholder = 'Ex: iPhone 15 Pro';
+        }
+        showStatusMessage('Erreur lors de la récupération des informations. Veuillez remplir manuellement.', 'error');
+        setTimeout(() => {
+            showStatusMessage('', '');
+        }, 4000);
+    } finally {
+        if (searchBtn) {
+            searchBtn.disabled = false;
+            searchBtn.classList.remove('loading');
+        }
+    }
+}
+
+// Récupérer les suggestions Google
+async function fetchGoogleSuggestions(query, container, inputElement) {
+    try {
+        // Utiliser l'API Google Suggest avec proxy CORS
+        // Utiliser allorigins.win comme proxy fiable
+        const googleUrl = `http://suggestqueries.google.com/complete/search?client=chrome&q=${encodeURIComponent(query)}&hl=fr`;
+        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(googleUrl)}`;
+        
+        const response = await fetch(proxyUrl);
+        
+        if (response.ok) {
+            const text = await response.text();
+            let data;
+            
+            try {
+                // Essayer de parser directement
+                data = JSON.parse(text);
+            } catch (e) {
+                // Si échec, essayer d'extraire le JSON du texte
+                const jsonMatch = text.match(/\[.*\]/s);
+                if (jsonMatch) {
+                    data = JSON.parse(jsonMatch[0]);
+                } else {
+                    throw new Error('Format de réponse invalide');
+                }
+            }
+            
+            // La structure est : ["query", ["sugg1", "sugg2"...], ...]
+            const suggestions = data && data[1] ? data[1] : [];
+            
+            if (suggestions.length > 0) {
+                displaySuggestions(suggestions, container, inputElement);
+            } else {
+                container.style.display = 'none';
+            }
+        } else {
+            container.style.display = 'none';
+        }
+    } catch (error) {
+        console.error('Erreur lors de la récupération des suggestions:', error);
+        // En cas d'erreur, masquer les suggestions
+        container.style.display = 'none';
+    }
+}
+
+// Afficher les suggestions
+function displaySuggestions(suggestions, container, inputElement) {
+    if (suggestions.length === 0) {
+        container.style.display = 'none';
+        return;
+    }
+    
+    // Limiter à 8 suggestions
+    const limitedSuggestions = suggestions.slice(0, 8);
+    
+    container.innerHTML = limitedSuggestions.map((suggestion, index) => {
+        return `
+            <div class="suggestion-item" data-index="${index}" data-value="${escapeHtml(suggestion)}">
+                <span class="suggestion-icon">🔍</span>
+                <span class="suggestion-text">${escapeHtml(suggestion)}</span>
+            </div>
+        `;
+    }).join('');
+    
+    // Ajouter les event listeners
+    container.querySelectorAll('.suggestion-item').forEach(item => {
+        item.addEventListener('click', async () => {
+            const value = item.getAttribute('data-value');
+            inputElement.value = value;
+            container.style.display = 'none';
+            inputElement.focus();
+            
+            // Si c'est le champ nom du produit dans la saisie manuelle, rechercher automatiquement le code-barres
+            if (inputElement.id === 'manualProductName') {
+                await searchBarcodeFromProductName(value, inputElement);
+            }
+        });
+        
+        item.addEventListener('mouseenter', () => {
+            container.querySelectorAll('.suggestion-item').forEach(i => i.classList.remove('selected'));
+            item.classList.add('selected');
+        });
+    });
+    
+    container.style.display = 'block';
+}
+
+// Rechercher le code-barres depuis le nom du produit (via UPCitemdb search)
+async function searchBarcodeFromProductName(productName, nameInputElement) {
+    if (!productName || productName.trim() === '') {
+        return;
+    }
+    
+    const serialNumberInput = document.getElementById('manualSerialNumber');
+    const searchBtn = document.getElementById('searchBarcodeBtn');
+    
+    // Afficher un indicateur de chargement
+    if (nameInputElement) {
+        nameInputElement.disabled = true;
+        nameInputElement.placeholder = 'Recherche du code-barres...';
+    }
+    if (searchBtn) {
+        searchBtn.disabled = true;
+        searchBtn.classList.add('loading');
+    }
+    showStatusMessage('Recherche du code-barres...', 'info');
+    
+    try {
+        // Étape 1: Rechercher le code-barres via l'API search (avec proxy CORS)
+        const searchUrl = `https://api.upcitemdb.com/prod/trial/search?s=${encodeURIComponent(productName)}&match_mode=0&type=product`;
+        const searchProxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(searchUrl)}`;
+        const searchResponse = await fetch(searchProxyUrl);
+        
+        if (searchResponse.ok) {
+            const searchText = await searchResponse.text();
+            let searchData;
+            try {
+                searchData = JSON.parse(searchText);
+            } catch (e) {
+                // Essayer d'extraire le JSON si nécessaire
+                const jsonMatch = searchText.match(/\{.*\}/s);
+                if (jsonMatch) {
+                    searchData = JSON.parse(jsonMatch[0]);
+                } else {
+                    throw new Error('Format de réponse invalide');
+                }
+            }
+            
+            if (searchData && searchData.items && searchData.items.length > 0) {
+                // Prendre le premier résultat le plus pertinent
+                const item = searchData.items[0];
+                const ean = item.ean || item.upc || null;
+                
+                if (ean) {
+                    // Remplir le champ code-barres
+                    if (serialNumberInput) {
+                        serialNumberInput.value = ean;
+                    }
+                    
+                    // Étape 2: Récupérer les caractéristiques complètes via lookup
+                    await fetchProductFromBarcode(ean, false);
+                } else {
+                    throw new Error('Code-barres non trouvé');
+                }
+            } else {
+                // Aucun produit trouvé
+                if (nameInputElement) {
+                    nameInputElement.disabled = false;
+                    nameInputElement.placeholder = 'Ex: iPhone 15 Pro';
+                }
+                if (searchBtn) {
+                    searchBtn.disabled = false;
+                    searchBtn.classList.remove('loading');
+                }
+                showStatusMessage('ℹ️ Aucun code-barres trouvé pour ce produit. Veuillez entrer le code-barres manuellement.', 'info');
+                setTimeout(() => {
+                    showStatusMessage('', '');
+                }, 4000);
+            }
+        } else {
+            throw new Error('Erreur API search');
+        }
+    } catch (error) {
+        console.error('Erreur lors de la recherche du code-barres:', error);
+        if (nameInputElement) {
+            nameInputElement.disabled = false;
+            nameInputElement.placeholder = 'Ex: iPhone 15 Pro';
+        }
+        if (searchBtn) {
+            searchBtn.disabled = false;
+            searchBtn.classList.remove('loading');
+        }
+        showStatusMessage('Erreur lors de la recherche. Veuillez entrer le code-barres manuellement.', 'error');
+        setTimeout(() => {
+            showStatusMessage('', '');
+        }, 4000);
+    }
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
 }
 
 function hideProductForm() {
     document.getElementById('productFormSection').style.display = 'none';
+}
+
+// Sauvegarder un item dans le dashboard
+function saveItemToDashboard(itemData) {
+    let items = JSON.parse(localStorage.getItem('dashboardItems') || '[]');
+    
+    // Chercher si un item avec le même numéro de série existe
+    const existingIndex = items.findIndex(item => item.serialNumber === itemData.serialNumber);
+    
+    if (existingIndex !== -1) {
+        // Item existe déjà, augmenter la quantité
+        items[existingIndex].quantity += 1;
+        items[existingIndex].lastUpdated = new Date().toISOString();
+    } else {
+        // Nouvel item, ajouter avec quantité 1
+        items.push({
+            ...itemData,
+            quantity: 1,
+            createdAt: new Date().toISOString(),
+            lastUpdated: new Date().toISOString()
+        });
+    }
+    
+    localStorage.setItem('dashboardItems', JSON.stringify(items));
+    console.log('Item sauvegardé dans le dashboard:', itemData);
 }
 
 // Envoyer les données au webhook
@@ -446,6 +1026,7 @@ async function sendToWebhook() {
     // Valider le formulaire
     const productName = document.getElementById('productName').value.trim();
     const serialNumber = document.getElementById('serialNumber').value.trim();
+    const productType = document.getElementById('productType').value;
     const categoryDetails = document.getElementById('categoryDetails').value.trim();
     
     if (!productName) {
@@ -457,6 +1038,12 @@ async function sendToWebhook() {
     if (!serialNumber) {
         showStatusMessage('Le numéro de série est obligatoire', 'error');
         document.getElementById('serialNumber').focus();
+        return;
+    }
+    
+    if (!productType) {
+        showStatusMessage('Le type est obligatoire', 'error');
+        document.getElementById('productType').focus();
         return;
     }
     
@@ -473,10 +1060,22 @@ async function sendToWebhook() {
             product: {
                 name: productName,
                 serialNumber: serialNumber,
+                type: productType,
                 categoryDetails: categoryDetails || null,
-                image: imageUrl || null
+                image: imageUrl || null,
+                scannedCode: currentScannedCode || serialNumber
             }
         };
+
+        // Sauvegarder dans le dashboard
+        saveItemToDashboard({
+            name: productName,
+            serialNumber: serialNumber,
+            type: productType,
+            categoryDetails: categoryDetails || null,
+            image: imageUrl || null,
+            scannedCode: currentScannedCode || serialNumber
+        });
 
         const response = await fetch(url, {
             method: 'POST',

@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Scanner de Codes-Barres</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Dashboard</h1>
+            <div style="margin-top: 8px; font-size: 14px; color: #666; font-weight: 400;">
+                Items Registered: <span id="totalItems" style="font-weight: 600; color: #1a1a1a;">0</span>
+            </div>
+        </header>
+
+        <div class="dashboard-controls">
+            <a href="index.html" class="btn btn-outline">Retour au Scanner</a>
+            <button id="exportCSVBtn" class="btn btn-primary">EXPORTER CSV</button>
+            <button id="clearAllBtn" class="btn btn-secondary">EFFACER TOUT</button>
+        </div>
+
+        <div class="search-section">
+            <input type="text" id="searchInput" placeholder="Rechercher par nom, numéro de série, type...">
+            <button id="searchBtn" class="btn btn-outline">RECHERCHER</button>
+        </div>
+
+        <div class="table-container">
+            <table id="itemsTable">
+                <thead>
+                    <tr>
+                        <th>
+                            <input type="checkbox" id="selectAll">
+                        </th>
+                        <th>
+                            NOM
+                            <span class="sort-icon" data-sort="name">↕</span>
+                        </th>
+                        <th>IMAGE</th>
+                        <th>
+                            QTY
+                            <span class="sort-icon" data-sort="quantity">↕</span>
+                        </th>
+                        <th>
+                            TYPE
+                            <span class="sort-icon" data-sort="type">↕</span>
+                        </th>
+                        <th>DÉTAILS</th>
+                        <th>
+                            NUM. SÉRIE
+                            <span class="sort-icon" data-sort="serialNumber">↕</span>
+                        </th>
+                        <th>CODE SCANNÉ</th>
+                        <th>ACTIONS</th>
+                    </tr>
+                </thead>
+                <tbody id="tableBody">
+                    <!-- Les items seront ajoutés ici dynamiquement -->
+                </tbody>
+            </table>
+        </div>
+
+        <div class="pagination">
+            <button id="prevPage" class="btn btn-outline" disabled>← PRÉCÉDENT</button>
+            <span id="pageInfo">Page 1 sur 1</span>
+            <button id="nextPage" class="btn btn-outline" disabled>SUIVANT →</button>
+        </div>
+
+        <div class="status-message" id="statusMessage"></div>
+    </div>
+
+    <script src="dashboard.js"></script>
+</body>
+</html>

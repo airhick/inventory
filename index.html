@@ -11,9 +11,9 @@
     <div class="login-container" id="loginContainer">
         <div class="login-box">
             <header>
-                <h1>BARCODE_SCANNER</h1>
-                <div style="margin-top: 10px; font-size: 0.9em; color: #666; font-family: 'Courier New', monospace;">
-                    > AUTHENTICATION REQUIRED
+                <h1>Barcode Scanner</h1>
+                <div style="margin-top: 8px; font-size: 14px; color: #666; font-weight: 400;">
+                    Authentication Required
                 </div>
             </header>
             
@@ -38,9 +38,9 @@
     <!-- Contenu principal (masqué jusqu'à la connexion) -->
     <div class="container" id="mainContainer" style="display: none;">
         <header>
-            <h1>BARCODE_SCANNER</h1>
-            <div style="margin-top: 10px; font-size: 0.9em; color: #666; font-family: 'Courier New', monospace;">
-                > SCAN MODE: ACTIVE
+            <h1>Barcode Scanner</h1>
+            <div style="margin-top: 8px; font-size: 14px; color: #666; font-weight: 400;">
+                Scan Mode: Active
             </div>
         </header>
 
@@ -56,8 +56,63 @@
         </div>
 
         <div class="manual-input-section" id="manualInputSection" style="display: none;">
-            <input type="text" id="manualCodeInput" placeholder="Entrez le code-barres">
-            <button id="submitManualBtn" class="btn btn-primary">Valider</button>
+            <h2 style="margin-bottom: 24px; text-align: center; font-size: 20px; font-weight: 600; color: #1a1a1a;">
+                Saisie manuelle
+            </h2>
+            
+            <div class="product-image-container" id="manualImageContainer" style="display: none;">
+                <img id="manualProductImage" src="" alt="Image produit">
+                <div class="image-placeholder" id="manualImagePlaceholder">
+                    <span>Image en chargement...</span>
+                </div>
+            </div>
+            
+            <form id="manualForm">
+                <div class="form-group">
+                    <label for="manualProductName">Nom du produit <span class="required">*</span></label>
+                    <input type="text" id="manualProductName" name="manualProductName" required placeholder="Ex: iPhone 15 Pro">
+                </div>
+
+                <div class="form-group">
+                    <label for="manualSerialNumber">Numéro de série / Code-barres <span class="required">*</span></label>
+                    <div class="barcode-input-wrapper">
+                        <input type="text" id="manualSerialNumber" name="manualSerialNumber" required placeholder="Entrez le code-barres">
+                        <button type="button" id="searchBarcodeBtn" class="btn-search-barcode" title="Rechercher les informations du produit">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0118.8-4.3M22 12.5a10 10 0 01-18.8 4.2"></path>
+                            </svg>
+                        </button>
+                    </div>
+                    <small style="color: #666; font-size: 12px; margin-top: 4px; display: block;">
+                        Entrez le code-barres et cliquez sur l'icône pour rechercher les informations
+                    </small>
+                </div>
+
+                <div class="form-group">
+                    <label for="manualProductType">Type <span class="required">*</span></label>
+                    <select id="manualProductType" name="manualProductType" required>
+                        <option value="">Sélectionner un type</option>
+                        <option value="location">Location</option>
+                        <option value="vente">Vente</option>
+                        <option value="utilisation">Utilisation</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="manualCategoryDetails">Catégorie / Détails</label>
+                    <textarea id="manualCategoryDetails" name="manualCategoryDetails" rows="3" placeholder="Ex: Électronique, Smartphone, etc. (optionnel)"></textarea>
+                </div>
+
+                <div class="form-group">
+                    <label for="manualImageUrl">URL de l'image (optionnel)</label>
+                    <input type="url" id="manualImageUrl" name="manualImageUrl" placeholder="https://exemple.com/image.jpg">
+                </div>
+
+                <div class="form-actions">
+                    <button type="button" id="submitManualBtn" class="btn btn-success">Enregistrer</button>
+                    <button type="button" id="cancelManualBtn" class="btn btn-outline">Annuler</button>
+                </div>
+            </form>
         </div>
 
         <div class="product-form-section" id="productFormSection" style="display: none;">
@@ -82,6 +137,16 @@
                 </div>
 
                 <div class="form-group">
+                    <label for="productType">Type <span class="required">*</span></label>
+                    <select id="productType" name="productType" required>
+                        <option value="">Sélectionner un type</option>
+                        <option value="location">Location</option>
+                        <option value="vente">Vente</option>
+                        <option value="utilisation">Utilisation</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
                     <label for="categoryDetails">Catégorie / Détails</label>
                     <textarea id="categoryDetails" name="categoryDetails" rows="3" placeholder="Ex: Électronique, Smartphone, etc. (optionnel)"></textarea>
                 </div>
@@ -95,12 +160,6 @@
             <div class="status-message" id="statusMessage"></div>
         </div>
 
-        <div class="config-section">
-            <h3>Configuration Webhook</h3>
-            <input type="text" id="webhookUrl" placeholder="URL du webhook" value="https://n8n.goreview.fr/webhook-test/acff1955-9ed2-4e48-b989-5a17d78b4452">
-            <button id="saveWebhookBtn" class="btn btn-outline">Enregistrer</button>
-            <div class="webhook-status" id="webhookStatus"></div>
-        </div>
     </div>
 
     <!-- Bibliothèque pour codes-barres -->
