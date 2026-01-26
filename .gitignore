@@ -1,9 +1,21 @@
-# Fichiers système
-.DS_Store
-Thumbs.db
-desktop.ini
+# Base de données
+data/
+*.db
+*.sqlite
+*.sqlite3
 
-# Éditeurs
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+
+# IDE
 .vscode/
 .idea/
 *.swp
@@ -12,15 +24,29 @@ desktop.ini
 
 # Logs
 *.log
-npm-debug.log*
 
-# Fichiers temporaires
-*.tmp
-*.temp
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
 
-# GitHub Pages
-.sass-cache/
-
-# Environnement
-.env
-.env.local
+# Anciens fichiers (à supprimer)
+backend/
+.dockerignore
+Dockerfile
+docker-compose.yml
+nginx.conf
+CHANGELOG_DOCKER.md
+DOCKER.md
+README_DOCKER.md
+QUICK_START.md
+SETUP_FIREBASE.md
+START_BACKEND.md
+DEPLOY_VPS.md
+DEPLOY.md
+start-docker.bat
+start-docker.sh
+start-server.bat
+start-server.py
+start-server.sh
+auto.py
