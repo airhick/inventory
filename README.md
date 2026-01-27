@@ -4,63 +4,78 @@ Application web pour scanner des codes-barres/QR codes et gérer un inventaire.
 
 ## 🚀 Architecture
 
-- **Frontend**: Next.js 15 + Chakra UI (port 3001)
-- **Backend API**: Python Flask (port 5000)
+- **Backend**: Python Flask (API + SSE)
+- **Frontend**: Next.js 15 + Chakra UI
 - **Base de données**: SQLite locale
 
 ## 📦 Installation
 
 ### Prérequis
 
-- Node.js 18+
+- Node.js 18+ 
 - Python 3.8+
 - Yarn ou npm
 
-### Installation Backend (API Flask)
+### Installation des dépendances
 
 ```bash
-# Installer les dépendances Python
+# 1. Installer les dépendances Python
 pip install -r requirements.txt
 
-# Lancer l'API
+# 2. Installer les dépendances Frontend
+cd horizon-ui-template
+yarn install
+cd ..
+```
+
+## 🔥 Mode Développement (RECOMMANDÉ)
+
+**Changements automatiquement rechargés sans rebuild !**
+
+### Windows
+
+```bash
+# Double-cliquez sur dev.bat
+# ou en ligne de commande:
+dev.bat
+```
+
+### Linux/Mac
+
+```bash
+chmod +x dev.sh
+./dev.sh
+```
+
+### Manuellement (2 terminaux)
+
+**Terminal 1 - Backend Flask:**
+```bash
 python server.py
 ```
 
-L'API démarre sur `http://localhost:5000/api`
-
-### Installation Frontend (Next.js)
-
+**Terminal 2 - Frontend Next.js:**
 ```bash
-# Aller dans le dossier frontend
 cd horizon-ui-template
-
-# Installer les dépendances
-yarn install
-# ou
-npm install
-
-# Lancer le serveur de développement
 yarn dev
-# ou
-npm run dev
 ```
 
-Le frontend démarre sur `http://localhost:3001`
+Ouvrir `http://localhost:3000` dans le navigateur.
 
-## 🚀 Démarrage rapide
+Les changements dans le code frontend sont automatiquement rechargés (hot reload).
 
-1. **Terminal 1** - Lancer l'API Flask:
-   ```bash
-   python server.py
-   ```
+## 📦 Mode Production (Export statique)
 
-2. **Terminal 2** - Lancer le frontend Next.js:
-   ```bash
-   cd horizon-ui-template
-   yarn dev
-   ```
+Pour un déploiement sans Node.js, construire le frontend:
 
-3. Ouvrir `http://localhost:3001` dans le navigateur
+```bash
+cd horizon-ui-template
+yarn build
+cd ..
+python server.py
+```
+
+Ouvrir `http://localhost:5000` dans le navigateur.
 
 ## 📖 Fonctionnalités
 
@@ -76,57 +91,37 @@ Le frontend démarre sur `http://localhost:3001`
 
 ```
 /
-├── server.py               # API Flask (backend)
+├── server.py               # Serveur API Flask
+├── dev.bat                 # Script mode développement (Windows)
+├── dev.sh                  # Script mode développement (Linux/Mac)
+├── start.bat               # Script mode production (Windows)
+├── start.sh                # Script mode production (Linux/Mac)
 ├── requirements.txt        # Dépendances Python
 ├── data/                   # Base de données SQLite
 │   └── inventory.db
-├── logo-globalvision.png   # Logo
-└── horizon-ui-template/    # Frontend Next.js
-    ├── src/
-    │   ├── app/            # Pages Next.js (App Router)
-    │   ├── components/     # Composants React
-    │   ├── lib/api.ts      # Client API
-    │   └── theme/          # Thème Chakra UI
-    ├── package.json
-    └── .env.local          # Configuration (URL API)
+└── horizon-ui-template/    # Code source Frontend
+    ├── src/                # Sources React/Next.js
+    ├── out/                # Build statique (mode production)
+    └── package.json
 ```
 
 ## 🔧 Configuration
 
-### API URL
+### Variables d'environnement
 
-Le frontend se connecte à l'API via la variable d'environnement dans `.env.local`:
-
-```
-NEXT_PUBLIC_API_URL=http://localhost:5000/api
-```
-
-### Changer les ports
-
-**API Flask** - Éditer `server.py`:
-```python
-app.run(host='0.0.0.0', port=5000)  # Changer 5000
-```
-
-**Frontend Next.js** - Utiliser:
-```bash
-yarn dev --port 3001
-```
+| Variable | Défaut | Description |
+|----------|--------|-------------|
+| `APP_MODE` | `development` | Mode: `development` ou `production` |
+| `SERVER_PORT` | `5000` | Port du serveur API |
+| `CORS_ORIGINS` | `localhost:*` | Origines CORS autorisées |
+| `DB_PATH` | `data/inventory.db` | Chemin de la base SQLite |
+| `TESSERACT_PATH` | (auto) | Chemin vers Tesseract OCR |
 
 ## 🐛 Dépannage
-
-### Le frontend charge indéfiniment
-
-Vérifiez que l'API Flask est bien démarrée sur le port 5000.
-
-### Erreur CORS
-
-L'API Flask a CORS activé par défaut. Si problème, vérifiez `flask_cors` dans `server.py`.
 
 ### Port déjà utilisé
 
 ```bash
-# Trouver et tuer le processus sur le port
 # Windows:
 netstat -ano | findstr :5000
 taskkill /PID <PID> /F
@@ -134,6 +129,10 @@ taskkill /PID <PID> /F
 # Linux/Mac:
 lsof -ti:5000 | xargs kill -9
 ```
+
+### Erreur CORS
+
+En mode développement, assurez-vous que le frontend utilise bien `http://localhost:5000/api` dans `.env.local`.
 
 ## 📄 Licence
 

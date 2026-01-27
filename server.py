@@ -5,7 +5,7 @@ Sert à la fois l'API REST et les fichiers statiques (HTML/CSS/JS)
 Base de données SQLite locale
 """
 
-from flask import Flask, request, jsonify, send_from_directory, Response
+from flask import Flask, request, jsonify, send_from_directory, Response, send_file
 from flask_cors import CORS
 import sqlite3
 import os
@@ -17,26 +17,155 @@ import json
 import base64
 import re
 from io import BytesIO
+from functools import wraps
+
+# ==================== CONFIGURATION VIA VARIABLES D'ENVIRONNEMENT ====================
+
+# Mode de l'application : 'development' ou 'production'
+APP_MODE = os.environ.get('APP_MODE', 'development')
+
+# Origines CORS autorisées (séparées par des virgules)
+CORS_ORIGINS = os.environ.get('CORS_ORIGINS', 'http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001')
+CORS_ORIGINS_LIST = [origin.strip() for origin in CORS_ORIGINS.split(',') if origin.strip()]
+
+# En mode développement, on peut autoriser toutes les origines
+if APP_MODE == 'development':
+    CORS_ORIGINS_LIST = ["*"]
+
+# Port du serveur
+SERVER_PORT = int(os.environ.get('SERVER_PORT', 5000))
+
+print(f'[CONFIG] Mode: {APP_MODE}')
+print(f'[CONFIG] CORS Origins: {CORS_ORIGINS_LIST}')
+print(f'[CONFIG] Port: {SERVER_PORT}')
+
+# ==================== FONCTIONS DE VALIDATION ====================
+
+def validate_required_fields(data, required_fields):
+    """Valider que les champs requis sont présents et non vides"""
+    missing = []
+    for field in required_fields:
+        if field not in data or data[field] is None or (isinstance(data[field], str) and not data[field].strip()):
+            missing.append(field)
+    return missing
+
+def validate_email(email):
+    """Valider le format d'un email"""
+    if not email:
+        return True  # Email optionnel
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return re.match(pattern, email) is not None
+
+def validate_phone(phone):
+    """Valider le format d'un numéro de téléphone"""
+    if not phone:
+        return True  # Téléphone optionnel
+    # Accepte les formats courants : +33, 06, 07, etc.
+    pattern = r'^[\+]?[(]?[0-9]{1,3}[)]?[-\s\.]?[0-9]{1,4}[-\s\.]?[0-9]{1,4}[-\s\.]?[0-9]{1,9}$'
+    return re.match(pattern, phone.replace(' ', '')) is not None
+
+def sanitize_string(value, max_length=500):
+    """Nettoyer et limiter la longueur d'une chaîne"""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        value = str(value)
+    # Supprimer les caractères de contrôle dangereux
+    value = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', value)
+    return value[:max_length].strip()
+
+def validate_positive_number(value, allow_zero=True):
+    """Valider qu'une valeur est un nombre positif"""
+    try:
+        num = float(value)
+        if allow_zero:
+            return num >= 0
+        return num > 0
+    except (TypeError, ValueError):
+        return False
+
+# ==================== RECHERCHE TESSERACT ====================
+
+def find_tesseract():
+    """Trouver le chemin de Tesseract selon l'OS"""
+    # D'abord vérifier la variable d'environnement
+    env_path = os.environ.get('TESSERACT_PATH')
+    if env_path and os.path.exists(env_path):
+        return env_path
+    
+    # Chemins par défaut selon l'OS
+    if os.name == 'nt':  # Windows
+        default_paths = [
+            r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+            r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
+            os.path.expanduser(r'~\AppData\Local\Tesseract-OCR\tesseract.exe'),
+        ]
+    else:  # Linux/Mac
+        default_paths = [
+            '/usr/bin/tesseract',
+            '/usr/local/bin/tesseract',
+            '/opt/homebrew/bin/tesseract',  # Mac avec Homebrew ARM
+        ]
+    
+    for path in default_paths:
+        if os.path.exists(path):
+            return path
+    
+    return None
 
 # OCR avec Tesseract
 try:
     import pytesseract
     from PIL import Image
-    # Configuration du chemin Tesseract pour Windows
-    tesseract_path = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-    if os.path.exists(tesseract_path):
+    
+    tesseract_path = find_tesseract()
+    if tesseract_path:
         pytesseract.pytesseract.tesseract_cmd = tesseract_path
         OCR_AVAILABLE = True
         print(f'[OCR] Tesseract configuré: {tesseract_path}')
     else:
         OCR_AVAILABLE = False
-        print('[OCR] Tesseract non trouvé')
+        print('[OCR] Tesseract non trouvé. Définissez TESSERACT_PATH ou installez Tesseract.')
 except ImportError:
     OCR_AVAILABLE = False
     print('[OCR] pytesseract non installé - pip install pytesseract Pillow')
 
+# Génération DOCX
+try:
+    from docx import Document
+    from docx.shared import Pt, Inches
+    DOCX_AVAILABLE = True
+    print('[DOCX] python-docx disponible')
+except ImportError:
+    DOCX_AVAILABLE = False
+    print('[DOCX] python-docx non installé - pip install python-docx')
+
 app = Flask(__name__, static_folder='.')
-CORS(app)
+
+# Configuration pour gérer les URLs longues (éviter erreur 414)
+# Augmenter la limite de taille de requête pour les données POST
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB
+
+# Gestionnaire d'erreur pour les URLs trop longues (414)
+@app.errorhandler(414)
+def request_uri_too_large(error):
+    """Gérer les erreurs 414 (Request-URI Too Long)"""
+    print(f'[ERREUR] URL trop longue (414): {request.url[:200]}...')
+    return jsonify({
+        'success': False,
+        'error': 'URL trop longue. Veuillez utiliser POST pour envoyer des données volumineuses.'
+    }), 414
+
+# Configuration CORS sécurisée
+CORS(app, 
+     resources={r"/api/*": {
+         "origins": CORS_ORIGINS_LIST,
+         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+         "allow_headers": ["Content-Type", "Authorization"],
+         "expose_headers": ["Content-Type"],
+         "max_age": 3600
+     }},
+     supports_credentials=True if APP_MODE == 'production' else False)
 
 # Système de broadcast pour Server-Sent Events
 clients = []
@@ -62,24 +191,120 @@ def broadcast_event(event_type, data):
             if client_queue in clients:
                 clients.remove(client_queue)
 
-# Configuration
-DB_PATH = os.path.join('data', 'inventory.db')
+# Configuration base de données
+DB_PATH = os.environ.get('DB_PATH', os.path.join('data', 'inventory.db'))
+print(f'[CONFIG] DB Path: {DB_PATH}')
+
+def sanitize_string(text):
+    """Nettoyer une chaîne de caractères pour éviter les problèmes d'encodage Unicode"""
+    if not text:
+        return text
+    try:
+        # Convertir en string si ce n'est pas déjà le cas
+        text = str(text)
+        
+        # Remplacer les caractères Unicode problématiques par des équivalents ASCII
+        replacements = {
+            '→': '->',
+            '←': '<-',
+            '↑': '^',
+            '↓': 'v',
+            '…': '...',
+            '–': '-',
+            '—': '-',
+            '"': '"',
+            '"': '"',
+            ''': "'",
+            ''': "'",
+        }
+        
+        for unicode_char, ascii_replacement in replacements.items():
+            text = text.replace(unicode_char, ascii_replacement)
+        
+        # Encoder en UTF-8 puis décoder pour s'assurer que c'est valide
+        # Cela élimine les caractères non-encodables
+        try:
+            text = text.encode('utf-8', errors='replace').decode('utf-8')
+        except:
+            # Si l'encodage échoue, utiliser une approche plus agressive
+            text = text.encode('ascii', errors='replace').decode('ascii')
+        
+        return text
+    except Exception as e:
+        # En cas d'erreur, retourner un message par défaut
+        try:
+            error_msg = str(e).encode('ascii', errors='replace').decode('ascii')
+            print(f'[ERREUR] Erreur lors de la sanitization: {error_msg}')
+        except:
+            print('[ERREUR] Erreur lors de la sanitization (encodage impossible)')
+        return 'Message'
+
+def sanitize_error(error):
+    """Nettoyer un message d'erreur pour éviter les problèmes d'encodage Unicode"""
+    try:
+        if isinstance(error, Exception):
+            error_str = str(error)
+        else:
+            error_str = str(error)
+        return sanitize_string(error_str)
+    except:
+        return 'Une erreur est survenue'
+
+def sanitize_notification_message(message):
+    """Nettoyer un message de notification pour éviter les problèmes d'encodage"""
+    return sanitize_string(message)
+
+def clean_existing_notifications():
+    """Nettoyer toutes les notifications existantes dans la base de données"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Récupérer toutes les notifications
+        cursor.execute('SELECT id, message FROM notifications')
+        rows = cursor.fetchall()
+        
+        updated_count = 0
+        for row in rows:
+            original_message = row['message']
+            if original_message:
+                clean_message = sanitize_notification_message(original_message)
+                # Si le message a changé, mettre à jour
+                if clean_message != original_message:
+                    cursor.execute('''
+                        UPDATE notifications 
+                        SET message = ? 
+                        WHERE id = ?
+                    ''', (clean_message, row['id']))
+                    updated_count += 1
+        
+        if updated_count > 0:
+            conn.commit()
+            print(f'[DB] {updated_count} notification(s) nettoyée(s) pour éviter les problèmes d\'encodage')
+        
+        conn.close()
+    except Exception as e:
+        print(f'[DB] Erreur lors du nettoyage des notifications: {str(e)}')
 
 def create_notification(message, type, item_serial_number, conn, cursor):
     """Créer une notification dans la base de données"""
     try:
+        # Nettoyer le message pour éviter les problèmes d'encodage
+        clean_message = sanitize_notification_message(message)
         now = datetime.now().isoformat()
         cursor.execute('''
             INSERT INTO notifications (message, type, item_serial_number, created_at)
             VALUES (?, ?, ?, ?)
         ''', (
-            message,
+            clean_message,
             type,
             item_serial_number,
             now
         ))
         notification_id = cursor.lastrowid
-        print(f'[API] Notification créée (ID: {notification_id}): {message}')
+        # Ne pas afficher le message dans la console car il peut contenir des caractères Unicode
+        # qui causent des erreurs d'encodage sur Windows
+        print(f'[API] Notification créée (ID: {notification_id})')
         
         # Limiter à 100 notifications (supprimer les plus anciennes)
         cursor.execute('''
@@ -106,20 +331,20 @@ def get_db():
     return conn
 
 def generate_next_item_id(cursor):
-    """Générer le prochain ID alphanumérique (aaaa, aaab, ..., aaaz, aaa0, aaa1, ..., aaa9, aaba, etc.)"""
+    """Générer le prochain ID alphanumérique (aaa, aab, ..., aaz, aa0, aa1, ..., aa9, aba, etc.)"""
     # Récupérer le dernier item_id utilisé
     cursor.execute('SELECT item_id FROM items WHERE item_id IS NOT NULL ORDER BY item_id DESC LIMIT 1')
     last_id_row = cursor.fetchone()
     
     if not last_id_row or not last_id_row['item_id']:
-        # Premier ID : aaaa
-        return 'aaaa'
+        # Premier ID : aaa
+        return 'aaa'
     
     last_id = last_id_row['item_id'].lower()
     
-    # S'assurer que l'ID fait exactement 4 caractères
-    if len(last_id) != 4:
-        return 'aaaa'
+    # S'assurer que l'ID fait exactement 3 caractères
+    if len(last_id) != 3:
+        return 'aaa'
     
     # Caractères valides : a-z (26) puis 0-9 (10) = 36 caractères
     chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
@@ -127,8 +352,8 @@ def generate_next_item_id(cursor):
     # Convertir l'ID en liste de caractères
     id_chars = list(last_id)
     
-    # Incrémenter de droite à gauche (position 3 -> 0)
-    for i in range(3, -1, -1):
+    # Incrémenter de droite à gauche (position 2 -> 0)
+    for i in range(2, -1, -1):
         char_index = chars.find(id_chars[i])
         if char_index == -1:
             # Caractère invalide, réinitialiser à 'a'
@@ -139,16 +364,16 @@ def generate_next_item_id(cursor):
             # Incrémenter ce caractère
             id_chars[i] = chars[char_index + 1]
             # Réinitialiser tous les caractères à droite à 'a'
-            for j in range(i + 1, 4):
+            for j in range(i + 1, 3):
                 id_chars[j] = 'a'
             return ''.join(id_chars)
         else:
             # Ce caractère est '9' (dernier), le réinitialiser à 'a' et continuer avec le suivant
             id_chars[i] = 'a'
     
-    # Si tous les caractères étaient '9', on recommence à aaaa
-    # (ne devrait jamais arriver avec seulement 4 caractères)
-    return 'aaaa'
+    # Si tous les caractères étaient '9', on recommence à aaa
+    # (ne devrait jamais arriver avec seulement 3 caractères)
+    return 'aaa'
 
 def init_db():
     """Initialiser la base de données"""
@@ -232,6 +457,19 @@ def init_db():
         )
     ''')
     
+    # Initialiser les nouvelles catégories d'équipement
+    new_equipment_categories = ['ordinateur', 'casque_vr', 'camera', 'eclairage', 'accessoire']
+    for cat_name in new_equipment_categories:
+        try:
+            cursor.execute(
+                'INSERT OR IGNORE INTO custom_categories (name, created_at) VALUES (?, ?)',
+                (cat_name, datetime.now().isoformat())
+            )
+        except sqlite3.IntegrityError:
+            pass  # La catégorie existe déjà
+    
+    conn.commit()
+    
     # Table d'historique des modifications d'items
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS item_history (
@@ -255,6 +493,11 @@ def init_db():
             created_at TEXT NOT NULL
         )
     ''')
+    
+    conn.commit()
+    
+    # Nettoyer les notifications existantes pour éviter les problèmes d'encodage
+    clean_existing_notifications()
     
     # Table des locations
     cursor.execute('''
@@ -328,27 +571,59 @@ def init_db():
     conn.close()
     print(f"[OK] Base de donnees initialisee: {DB_PATH}")
 
-# ==================== ROUTES STATIQUES ====================
+# ==================== CONFIGURATION FRONTEND STATIQUE ====================
+
+# Chemin vers le build du frontend Next.js
+FRONTEND_BUILD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'horizon-ui-template', 'out')
+
+def check_frontend_build():
+    """Vérifier si le frontend est buildé"""
+    if os.path.exists(FRONTEND_BUILD_DIR) and os.path.isdir(FRONTEND_BUILD_DIR):
+        # Vérifier qu'il y a au moins un fichier index.html
+        index_path = os.path.join(FRONTEND_BUILD_DIR, 'index.html')
+        return os.path.exists(index_path)
+    return False
+
+FRONTEND_AVAILABLE = check_frontend_build()
+if FRONTEND_AVAILABLE:
+    print(f'[FRONTEND] Build trouvé dans: {FRONTEND_BUILD_DIR}')
+else:
+    print(f'[FRONTEND] Build non trouvé. Exécutez: cd horizon-ui-template && yarn build')
+
+# ==================== ROUTES FRONTEND (fichiers statiques) ====================
 
 @app.route('/')
 def serve_index():
-    """Rediriger vers le frontend Next.js"""
-    return '''
-    <html>
-    <head><title>API CRM Code-Barres</title></head>
-    <body style="font-family: sans-serif; text-align: center; padding: 50px;">
-        <h1>API CRM Code-Barres</h1>
-        <p>Le frontend est maintenant accessible sur le port <strong>3001</strong></p>
-        <p><a href="http://localhost:3001">Accéder au frontend</a></p>
-        <hr>
-        <p>API disponible sur <code>/api/*</code></p>
-    </body>
-    </html>
-    ''', 200
+    """Servir la page d'accueil du frontend"""
+    if FRONTEND_AVAILABLE:
+        return send_from_directory(FRONTEND_BUILD_DIR, 'index.html')
+    else:
+        return '''
+        <html>
+        <head><title>Code Bar CRM - Build requis</title></head>
+        <body style="font-family: sans-serif; text-align: center; padding: 50px;">
+            <h1>🔧 Frontend non buildé</h1>
+            <p>Pour utiliser l'application, vous devez d'abord compiler le frontend :</p>
+            <pre style="background: #f4f4f4; padding: 20px; display: inline-block; text-align: left;">
+cd horizon-ui-template
+yarn install
+yarn build
+            </pre>
+            <p>Puis relancez le serveur :</p>
+            <pre style="background: #f4f4f4; padding: 20px; display: inline-block;">python server.py</pre>
+            <hr>
+            <p>L'API est disponible sur <code>/api/*</code></p>
+        </body>
+        </html>
+        ''', 200
 
 @app.route('/favicon.ico')
 def serve_favicon():
-    """Servir le favicon (évite l'erreur 404)"""
+    """Servir le favicon"""
+    if FRONTEND_AVAILABLE:
+        favicon_path = os.path.join(FRONTEND_BUILD_DIR, 'favicon.ico')
+        if os.path.exists(favicon_path):
+            return send_from_directory(FRONTEND_BUILD_DIR, 'favicon.ico')
     return '', 204
 
 @app.route('/logo-globalvision.png')
@@ -357,6 +632,65 @@ def serve_logo():
     if os.path.exists('logo-globalvision.png'):
         return send_from_directory('.', 'logo-globalvision.png')
     return '', 404
+
+# Route pour servir les fichiers statiques Next.js (_next, images, etc.)
+@app.route('/_next/<path:filename>')
+def serve_next_static(filename):
+    """Servir les fichiers statiques Next.js (_next)"""
+    if FRONTEND_AVAILABLE:
+        return send_from_directory(os.path.join(FRONTEND_BUILD_DIR, '_next'), filename)
+    return '', 404
+
+@app.route('/fonts/<path:filename>')
+def serve_fonts(filename):
+    """Servir les polices"""
+    if FRONTEND_AVAILABLE:
+        fonts_dir = os.path.join(FRONTEND_BUILD_DIR, 'fonts')
+        if os.path.exists(fonts_dir):
+            return send_from_directory(fonts_dir, filename)
+    return '', 404
+
+@app.route('/img/<path:filename>')
+def serve_images(filename):
+    """Servir les images"""
+    if FRONTEND_AVAILABLE:
+        img_dir = os.path.join(FRONTEND_BUILD_DIR, 'img')
+        if os.path.exists(img_dir):
+            return send_from_directory(img_dir, filename)
+    return '', 404
+
+# Route catch-all pour les pages du frontend (doit être APRÈS les routes API)
+@app.route('/<path:path>')
+def serve_frontend_pages(path):
+    """Servir les pages du frontend (catch-all)"""
+    if not FRONTEND_AVAILABLE:
+        return '', 404
+    
+    # Ne pas intercepter les routes API
+    if path.startswith('api/'):
+        return '', 404
+    
+    # Essayer de servir le fichier directement
+    file_path = os.path.join(FRONTEND_BUILD_DIR, path)
+    if os.path.exists(file_path) and os.path.isfile(file_path):
+        directory = os.path.dirname(file_path)
+        filename = os.path.basename(file_path)
+        return send_from_directory(directory, filename)
+    
+    # Essayer avec .html
+    html_path = os.path.join(FRONTEND_BUILD_DIR, f'{path}.html')
+    if os.path.exists(html_path):
+        directory = os.path.dirname(html_path)
+        filename = os.path.basename(html_path)
+        return send_from_directory(directory, filename)
+    
+    # Essayer comme dossier avec index.html
+    index_path = os.path.join(FRONTEND_BUILD_DIR, path, 'index.html')
+    if os.path.exists(index_path):
+        return send_from_directory(os.path.join(FRONTEND_BUILD_DIR, path), 'index.html')
+    
+    # Fallback: retourner index.html pour le routing côté client
+    return send_from_directory(FRONTEND_BUILD_DIR, 'index.html')
 
 # ==================== API ITEMS ====================
 
@@ -410,7 +744,7 @@ def get_items():
         print(f'[API] ERREUR GET /api/items: {str(e)}')
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 @app.route('/api/items/search', methods=['GET'])
 def search_item():
@@ -465,17 +799,40 @@ def search_item():
         print(f'[API] ERREUR GET /api/items/search: {str(e)}')
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 @app.route('/api/items', methods=['POST'])
 def create_item():
     """Créer ou mettre à jour un item"""
     try:
         data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'error': 'Données JSON invalides'}), 400
+        
         print(f'[API] POST /api/items - Données reçues: {data}')
         
+        # Validation des champs requis
+        missing_fields = validate_required_fields(data, ['name', 'serialNumber'])
+        if missing_fields:
+            print(f'[API] ERREUR: Champs manquants: {missing_fields}')
+            return jsonify({'success': False, 'error': f'Champs obligatoires manquants: {", ".join(missing_fields)}'}), 400
+        
+        # Sanitization des données
+        data['name'] = sanitize_string(data.get('name'), 200)
+        data['serialNumber'] = sanitize_string(data.get('serialNumber'), 100)
+        data['brand'] = sanitize_string(data.get('brand'), 100)
+        data['model'] = sanitize_string(data.get('model'), 100)
+        data['category'] = sanitize_string(data.get('category'), 50)
+        data['categoryDetails'] = sanitize_string(data.get('categoryDetails'), 1000)
+        
+        # Validation de la quantité
+        quantity = data.get('quantity', 1)
+        if not validate_positive_number(quantity, allow_zero=False):
+            return jsonify({'success': False, 'error': 'La quantité doit être un nombre positif'}), 400
+        data['quantity'] = int(quantity)
+        
         if not data.get('name') or not data.get('serialNumber'):
-            print('[API] ERREUR: Nom ou numéro de série manquant')
+            print('[API] ERREUR: Nom ou numéro de série manquant après sanitization')
             return jsonify({'success': False, 'error': 'Le nom et le numéro de série sont obligatoires'}), 400
         
         now = datetime.now().isoformat()
@@ -579,11 +936,30 @@ def create_item():
             
             print(f'[API] Nouvel item créé (ID: {item_id})')
         
-        # Créer une notification
+        # Créer une notification avec heure
+        try:
+            time_str = datetime.now().strftime('%H:%M:%S')
+            date_str = datetime.now().strftime('%d/%m/%Y')
+        except:
+            time_str = datetime.now().strftime('%H:%M:%S')
+            date_str = datetime.now().strftime('%d/%m/%Y')
+        
         if existing:
-            create_notification(f'Item "{data["name"]}" : quantité modifiée de {old_quantity} à {new_quantity}', 'success', data['serialNumber'], conn, cursor)
+            create_notification(
+                f'📊 Modification de quantité - Item "{data["name"]}" ({data["serialNumber"]}) : {old_quantity} -> {new_quantity} | {date_str} {time_str}',
+                'success',
+                data['serialNumber'],
+                conn,
+                cursor
+            )
         else:
-            create_notification(f'Item "{data["name"]}" créé', 'success', data['serialNumber'], conn, cursor)
+            create_notification(
+                f'✨ Nouvel item créé - "{data["name"]}" ({data["serialNumber"]}) | {date_str} {time_str}',
+                'success',
+                data['serialNumber'],
+                conn,
+                cursor
+            )
         
         conn.commit()
         conn.close()
@@ -598,7 +974,7 @@ def create_item():
         print(f'[API] ERREUR POST /api/items: {str(e)}')
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 @app.route('/api/items/<serial_number>', methods=['PUT'])
 def update_item(serial_number):
@@ -625,7 +1001,11 @@ def update_item(serial_number):
             'categoryDetails': 'category_details',
             'image': 'image',
             'scannedCode': 'scanned_code',
-            'serialNumber': 'serial_number'
+            'serialNumber': 'serial_number',
+            'brand': 'brand',
+            'model': 'model',
+            'itemType': 'item_type',
+            'status': 'status'
         }
         
         # Construire la requête de mise à jour et enregistrer l'historique
@@ -655,6 +1035,40 @@ def update_item(serial_number):
                         'new_value': new_val_str,
                         'changed_at': now
                     })
+        
+        # Gérer customData (champs personnalisés)
+        if 'customData' in data:
+            old_custom_data = {}
+            if existing.get('custom_data'):
+                try:
+                    old_custom_data = json.loads(existing['custom_data'])
+                except:
+                    pass
+            
+            new_custom_data = data.get('customData', {})
+            
+            # Comparer chaque champ personnalisé
+            all_custom_keys = set(list(old_custom_data.keys()) + list(new_custom_data.keys()))
+            for custom_key in all_custom_keys:
+                old_val = old_custom_data.get(custom_key)
+                new_val = new_custom_data.get(custom_key)
+                
+                old_val_str = str(old_val) if old_val is not None else None
+                new_val_str = str(new_val) if new_val is not None else None
+                
+                if old_val_str != new_val_str:
+                    history_entries.append({
+                        'item_serial_number': serial_number,
+                        'field_name': f'custom_{custom_key}',
+                        'old_value': old_val_str,
+                        'new_value': new_val_str,
+                        'changed_at': now
+                    })
+            
+            # Mettre à jour custom_data dans la base
+            custom_data_json = json.dumps(new_custom_data) if new_custom_data else None
+            update_fields.append('custom_data = ?')
+            update_values.append(custom_data_json)
         
         # Si le serialNumber change, mettre à jour la référence dans l'historique
         if 'serialNumber' in data and data['serialNumber'] != serial_number:
@@ -694,18 +1108,51 @@ def update_item(serial_number):
                     'category': 'Catégorie',
                     'categoryDetails': 'Détails',
                     'serialNumber': 'Numéro de série',
-                    'scannedCode': 'Code scanné'
+                    'scannedCode': 'Code scanné',
+                    'brand': 'Marque',
+                    'model': 'Modèle',
+                    'itemType': 'Type',
+                    'status': 'Statut',
+                    'image': 'Image'
                 }
-                field_label = field_labels.get(entry['field_name'], entry['field_name'])
                 
-                if entry['field_name'] == 'quantity':
-                    notification_msg = f'Item "{item_name}" : quantité modifiée de {entry["old_value"]} à {entry["new_value"]}'
-                elif entry['field_name'] == 'name':
-                    notification_msg = f'Item "{entry["old_value"]}" : nom modifié en "{entry["new_value"]}"'
-                elif entry['field_name'] == 'category':
-                    notification_msg = f'Item "{item_name}" : catégorie modifiée de "{entry["old_value"] or "aucune"}" à "{entry["new_value"]}"'
+                # Gérer les champs personnalisés
+                field_name = entry['field_name']
+                if field_name.startswith('custom_'):
+                    # Récupérer le nom du champ personnalisé depuis la base
+                    custom_key = field_name.replace('custom_', '')
+                    cursor.execute('SELECT name FROM custom_fields WHERE field_key = ?', (custom_key,))
+                    custom_field = cursor.fetchone()
+                    field_label = custom_field['name'] if custom_field else custom_key
                 else:
-                    notification_msg = f'Item "{item_name}" : {field_label} modifié de "{entry["old_value"]}" à "{entry["new_value"]}"'
+                    field_label = field_labels.get(field_name, field_name)
+                
+                # Formater l'heure complète
+                try:
+                    changed_time = datetime.fromisoformat(entry['changed_at'].replace('Z', '+00:00'))
+                    time_str = changed_time.strftime('%H:%M:%S')
+                    date_str = changed_time.strftime('%d/%m/%Y')
+                except:
+                    changed_time = datetime.now()
+                    time_str = changed_time.strftime('%H:%M:%S')
+                    date_str = changed_time.strftime('%d/%m/%Y')
+                
+                old_val_display = entry['old_value'] if entry['old_value'] else 'vide'
+                new_val_display = entry['new_value'] if entry['new_value'] else 'vide'
+                
+                # Formater le message avec tous les détails
+                if field_name == 'quantity':
+                    notification_msg = f'📊 Modification de {field_label} - Item "{item_name}" ({serial_number}) : {old_val_display} -> {new_val_display} | {date_str} {time_str}'
+                elif field_name == 'name':
+                    notification_msg = f'✏️ Modification de {field_label} - Item "{old_val_display}" ({serial_number}) -> "{new_val_display}" | {date_str} {time_str}'
+                elif field_name == 'category':
+                    notification_msg = f'🏷️ Modification de {field_label} - Item "{item_name}" ({serial_number}) : {old_val_display or "aucune"} -> {new_val_display} | {date_str} {time_str}'
+                elif field_name == 'status':
+                    notification_msg = f'🔄 Modification de {field_label} - Item "{item_name}" ({serial_number}) : {old_val_display} -> {new_val_display} | {date_str} {time_str}'
+                elif field_name.startswith('custom_'):
+                    notification_msg = f'📝 Modification de {field_label} - Item "{item_name}" ({serial_number}) : {old_val_display} -> {new_val_display} | {date_str} {time_str}'
+                else:
+                    notification_msg = f'✏️ Modification de {field_label} - Item "{item_name}" ({serial_number}) : {old_val_display} -> {new_val_display} | {date_str} {time_str}'
                 
                 create_notification(notification_msg, 'success', serial_number, conn, cursor)
         
@@ -721,7 +1168,7 @@ def update_item(serial_number):
         print(f'[API] ERREUR PUT /api/items/{serial_number}: {str(e)}')
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 @app.route('/api/events', methods=['GET'])
 def stream_events():
@@ -788,7 +1235,7 @@ def get_item_history(serial_number):
         return jsonify({'success': True, 'history': history}), 200
     except Exception as e:
         print(f'[API] ERREUR GET /api/items/{serial_number}/history: {str(e)}')
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 @app.route('/api/items/<serial_number>', methods=['DELETE'])
 def delete_item(serial_number):
@@ -808,8 +1255,21 @@ def delete_item(serial_number):
             conn.close()
             return jsonify({'success': False, 'error': 'Item non trouvé'}), 404
         
-        # Créer une notification
-        create_notification(f'Item "{item_name}" supprimé', 'success', serial_number, conn, cursor)
+        # Créer une notification avec heure
+        try:
+            time_str = datetime.now().strftime('%H:%M:%S')
+            date_str = datetime.now().strftime('%d/%m/%Y')
+        except:
+            time_str = datetime.now().strftime('%H:%M:%S')
+            date_str = datetime.now().strftime('%d/%m/%Y')
+        
+        create_notification(
+            f'🗑️ Item supprimé - "{item_name}" ({serial_number}) | {date_str} {time_str}',
+            'success',
+            serial_number,
+            conn,
+            cursor
+        )
         
         conn.commit()
         conn.close()
@@ -820,7 +1280,7 @@ def delete_item(serial_number):
         
         return jsonify({'success': True}), 200
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 # ==================== API CATEGORIES ====================
 
@@ -839,7 +1299,20 @@ def get_categories():
         
         conn.close()
         
-        default_categories = ['materiel', 'drone', 'video', 'audio', 'streaming', 'robot', 'autre']
+        default_categories = [
+            'materiel', 
+            'drone', 
+            'video', 
+            'audio', 
+            'streaming', 
+            'robot', 
+            'ordinateur',
+            'casque_vr',
+            'camera',
+            'eclairage',
+            'accessoire',
+            'autre'
+        ]
         available_default = [c for c in default_categories if c not in deleted_categories]
         available_custom = [c for c in custom_categories if c not in deleted_categories]
         
@@ -850,7 +1323,7 @@ def get_categories():
             'deletedCategories': deleted_categories
         }), 200
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 @app.route('/api/categories', methods=['POST'])
 def create_category():
@@ -893,7 +1366,7 @@ def create_category():
     except sqlite3.IntegrityError:
         return jsonify({'success': False, 'error': 'Cette catégorie existe déjà'}), 409
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 @app.route('/api/categories/<category_name>', methods=['DELETE'])
 def delete_category(category_name):
@@ -934,7 +1407,7 @@ def delete_category(category_name):
             'message': f'Catégorie supprimée. {updated_count} item(s) mis à jour.'
         }), 200
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 # ==================== API CUSTOM FIELDS (Colonnes personnalisées) ====================
 
@@ -967,7 +1440,7 @@ def get_custom_fields():
         return jsonify({'success': True, 'fields': fields}), 200
     except Exception as e:
         print(f'[API] ERREUR GET /api/custom-fields: {str(e)}')
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 @app.route('/api/custom-fields', methods=['POST'])
 def create_custom_field():
@@ -1030,7 +1503,7 @@ def create_custom_field():
         return jsonify({'success': False, 'error': 'Un champ avec ce nom existe déjà'}), 409
     except Exception as e:
         print(f'[API] ERREUR POST /api/custom-fields: {str(e)}')
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 @app.route('/api/custom-fields/<int:field_id>', methods=['PUT'])
 def update_custom_field(field_id):
@@ -1099,7 +1572,7 @@ def update_custom_field(field_id):
         
     except Exception as e:
         print(f'[API] ERREUR PUT /api/custom-fields/{field_id}: {str(e)}')
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 @app.route('/api/custom-fields/<int:field_id>', methods=['DELETE'])
 def delete_custom_field(field_id):
@@ -1137,7 +1610,7 @@ def delete_custom_field(field_id):
         
     except Exception as e:
         print(f'[API] ERREUR DELETE /api/custom-fields/{field_id}: {str(e)}')
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 # ==================== API NOTIFICATIONS ====================
 
@@ -1158,25 +1631,62 @@ def get_notifications():
         ''')
         
         rows = cursor.fetchall()
-        notifications = [{
-            'id': row['id'],
-            'message': row['message'],
-            'type': row['type'],
-            'itemSerialNumber': row['item_serial_number'],
-            'timestamp': row['created_at'],
-            'created_at': row['created_at']  # Alias pour compatibilité
-        } for row in rows]
+        notifications = []
+        
+        # Traiter chaque notification individuellement pour gérer les erreurs d'encodage
+        for row in rows:
+            try:
+                # Récupérer le message et le sanitizer
+                raw_message = row['message']
+                if raw_message is None:
+                    raw_message = ''
+                
+                # Sanitizer le message pour éviter les problèmes d'encodage
+                clean_message = sanitize_notification_message(raw_message)
+                
+                notifications.append({
+                    'id': row['id'],
+                    'message': clean_message,
+                    'type': row['type'],
+                    'itemSerialNumber': row['item_serial_number'],
+                    'timestamp': row['created_at'],
+                    'created_at': row['created_at']  # Alias pour compatibilité
+                })
+            except Exception as msg_error:
+                # Si une notification spécifique cause une erreur, la remplacer par un message par défaut
+                print(f'[API] Erreur lors du traitement d\'une notification (ID: {row.get("id", "unknown")}): {str(msg_error)}')
+                notifications.append({
+                    'id': row.get('id', 0),
+                    'message': 'Message de notification (erreur d\'encodage)',
+                    'type': row.get('type', 'info'),
+                    'itemSerialNumber': row.get('item_serial_number'),
+                    'timestamp': row.get('created_at', ''),
+                    'created_at': row.get('created_at', '')
+                })
         
         conn.close()
         print(f'[API] GET /api/notifications - {len(notifications)} notifications retournées')
-        for notif in notifications[:3]:  # Afficher les 3 premières pour debug
-            print(f'[API]   - {notif["message"]} ({notif["type"]})')
+        # Ne pas afficher les messages dans la console car ils peuvent contenir des caractères Unicode
+        # qui causent des erreurs d'encodage sur Windows
         return jsonify({'success': True, 'notifications': notifications}), 200
     except Exception as e:
-        print(f'[API] ERREUR GET /api/notifications: {str(e)}')
+        # Gérer les erreurs d'encodage de manière plus robuste
+        error_msg = str(e)
+        # Essayer de convertir l'erreur en ASCII si elle contient des caractères Unicode
+        try:
+            error_msg = error_msg.encode('ascii', errors='replace').decode('ascii')
+        except:
+            error_msg = 'Erreur lors de la récupération des notifications'
+        
+        print(f'[API] ERREUR GET /api/notifications: {error_msg}')
         import traceback
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        try:
+            traceback.print_exc()
+        except:
+            # Si même l'affichage de la traceback échoue, ignorer
+            pass
+        
+        return jsonify({'success': False, 'error': sanitize_error(error_msg)}), 500
 
 @app.route('/api/notifications/<int:notification_id>', methods=['DELETE'])
 def delete_notification(notification_id):
@@ -1209,7 +1719,7 @@ def delete_notification(notification_id):
         print(f'[API] ERREUR DELETE /api/notifications/{notification_id}: {str(e)}')
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 @app.route('/api/notifications', methods=['DELETE'])
 def clear_notifications():
@@ -1228,7 +1738,7 @@ def clear_notifications():
         
         return jsonify({'success': True}), 200
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 # ==================== PROXY POUR APIs EXTERNES ====================
 
@@ -1331,7 +1841,7 @@ def proxy_gtinsearch():
         print(f'[Proxy] Erreur inattendue: {str(e)}')
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 200
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 200
 
 @app.route('/api/proxy/openfoodfacts', methods=['GET'])
 def proxy_openfoodfacts():
@@ -1369,12 +1879,12 @@ def proxy_openfoodfacts():
         print(f'[Proxy] Open Food Facts erreur: {str(e)}')
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'status': 0, 'error': str(e)}), 200
+        return jsonify({'success': False, 'status': 0, 'error': sanitize_error(e)}), 200
     except Exception as e:
         print(f'[Proxy] Open Food Facts erreur inattendue: {str(e)}')
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'status': 0, 'error': str(e)}), 200
+        return jsonify({'success': False, 'status': 0, 'error': sanitize_error(e)}), 200
 
 @app.route('/api/proxy/openfoodfacts/search', methods=['GET'])
 def proxy_openfoodfacts_search():
@@ -1412,12 +1922,12 @@ def proxy_openfoodfacts_search():
         print(f'[Proxy] Open Food Facts recherche erreur: {str(e)}')
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'products': [], 'error': str(e)}), 200
+        return jsonify({'success': False, 'products': [], 'error': sanitize_error(e)}), 200
     except Exception as e:
         print(f'[Proxy] Open Food Facts recherche erreur inattendue: {str(e)}')
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'products': [], 'error': str(e)}), 200
+        return jsonify({'success': False, 'products': [], 'error': sanitize_error(e)}), 200
 
 # ==================== API LOCATIONS ====================
 
@@ -1465,13 +1975,51 @@ def get_rentals():
         print(f'[API] ERREUR GET /api/rentals: {str(e)}')
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 @app.route('/api/rentals', methods=['POST'])
 def create_rental():
     """Créer une nouvelle location"""
     try:
         data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'error': 'Données JSON invalides'}), 400
+        
+        # Validation des champs requis
+        required_fields = ['renterName', 'renterEmail', 'renterPhone', 'rentalPrice', 'rentalDeposit', 'rentalDuration', 'startDate', 'endDate', 'itemsData']
+        missing_fields = validate_required_fields(data, required_fields)
+        if missing_fields:
+            return jsonify({'success': False, 'error': f'Champs obligatoires manquants: {", ".join(missing_fields)}'}), 400
+        
+        # Validation de l'email
+        if not validate_email(data.get('renterEmail')):
+            return jsonify({'success': False, 'error': 'Format d\'email invalide'}), 400
+        
+        # Validation du téléphone
+        if not validate_phone(data.get('renterPhone')):
+            return jsonify({'success': False, 'error': 'Format de téléphone invalide'}), 400
+        
+        # Validation des montants
+        if not validate_positive_number(data.get('rentalPrice')):
+            return jsonify({'success': False, 'error': 'Le prix de location doit être un nombre positif'}), 400
+        if not validate_positive_number(data.get('rentalDeposit')):
+            return jsonify({'success': False, 'error': 'La caution doit être un nombre positif'}), 400
+        
+        # Validation de la durée
+        if not validate_positive_number(data.get('rentalDuration'), allow_zero=False):
+            return jsonify({'success': False, 'error': 'La durée doit être un nombre positif'}), 400
+        
+        # Validation des items
+        if not isinstance(data.get('itemsData'), list) or len(data.get('itemsData', [])) == 0:
+            return jsonify({'success': False, 'error': 'Au moins un item doit être sélectionné'}), 400
+        
+        # Sanitization
+        data['renterName'] = sanitize_string(data.get('renterName'), 200)
+        data['renterEmail'] = sanitize_string(data.get('renterEmail'), 200)
+        data['renterPhone'] = sanitize_string(data.get('renterPhone'), 50)
+        data['renterAddress'] = sanitize_string(data.get('renterAddress'), 500)
+        data['notes'] = sanitize_string(data.get('notes'), 2000)
+        
         now = datetime.now().isoformat()
         conn = get_db()
         cursor = conn.cursor()
@@ -1512,7 +2060,7 @@ def create_rental():
         print(f'[API] ERREUR POST /api/rentals: {str(e)}')
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 @app.route('/api/rentals/<int:rental_id>', methods=['PUT'])
 def update_rental(rental_id):
@@ -1557,7 +2105,7 @@ def update_rental(rental_id):
         print(f'[API] ERREUR PUT /api/rentals/{rental_id}: {str(e)}')
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 @app.route('/api/rentals/<int:rental_id>', methods=['DELETE'])
 def delete_rental(rental_id):
@@ -1577,7 +2125,212 @@ def delete_rental(rental_id):
         print(f'[API] ERREUR DELETE /api/rentals/{rental_id}: {str(e)}')
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
+
+@app.route('/api/rentals/<int:rental_id>/caution-doc', methods=['GET'])
+def get_rental_caution_doc(rental_id):
+    """Générer et télécharger le document de caution pour une location"""
+    try:
+        if not DOCX_AVAILABLE:
+            return jsonify({'success': False, 'error': 'python-docx non disponible'}), 500
+        
+        # Récupérer la location
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM rentals WHERE id = ?', (rental_id,))
+        rental = cursor.fetchone()
+        conn.close()
+        
+        if not rental:
+            return jsonify({'success': False, 'error': 'Location non trouvée'}), 404
+        
+        # Charger le modèle DOCX
+        template_path = os.path.join('.', 'Modèle pour caution Location.docx')
+        if not os.path.exists(template_path):
+            return jsonify({'success': False, 'error': 'Modèle DOCX non trouvé'}), 404
+        
+        doc = Document(template_path)
+        
+        # Formater les dates
+        def format_date(date_str):
+            if not date_str:
+                return ''
+            try:
+                date_obj = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                return date_obj.strftime('%d/%m/%Y')
+            except:
+                return date_str
+        
+        # Extraire prénom et nom (format: "Prénom Nom")
+        renter_name = rental['renter_name'] or ''
+        name_parts = renter_name.split(' ', 1)
+        prenom = name_parts[0] if len(name_parts) > 0 else ''
+        nom = name_parts[1] if len(name_parts) > 1 else prenom  # Si un seul mot, c'est probablement le nom
+        
+        # Parser les items loués
+        items_data = []
+        try:
+            items_data = json.loads(rental['items_data']) if rental['items_data'] else []
+        except:
+            items_data = []
+        
+        # Formater la liste des items
+        items_list_str = ', '.join([
+            f"{item.get('name', 'Item')} ({item.get('brand', '')} {item.get('model', '')})"
+            for item in items_data
+        ])
+        
+        # Dictionnaire de tous les placeholders possibles
+        all_placeholders = {
+            # Variations pour le nom
+            '{{nom}}': nom,
+            '{{NOM}}': nom.upper(),
+            '{{prenom}}': prenom,
+            '{{PRENOM}}': prenom.upper(),
+            '{{nom_complet}}': renter_name,
+            '{{NOM_COMPLET}}': renter_name.upper(),
+            'nom_locataire': nom,
+            'prenom_locataire': prenom,
+            'NOM_LOCATAIRE': nom.upper(),
+            'PRENOM_LOCATAIRE': prenom.upper(),
+            '[NOM]': nom,
+            '[PRENOM]': prenom,
+            '[nom]': nom,
+            '[prenom]': prenom,
+            
+            # Adresse
+            '{{adresse}}': rental['renter_address'] or '',
+            'adresse_locataire': rental['renter_address'] or '',
+            '[ADRESSE]': rental['renter_address'] or '',
+            '[adresse]': rental['renter_address'] or '',
+            
+            # Email
+            '{{email}}': rental['renter_email'] or '',
+            'email_locataire': rental['renter_email'] or '',
+            '[EMAIL]': rental['renter_email'] or '',
+            '[email]': rental['renter_email'] or '',
+            
+            # Téléphone
+            '{{telephone}}': rental['renter_phone'] or '',
+            '{{tel}}': rental['renter_phone'] or '',
+            'telephone_locataire': rental['renter_phone'] or '',
+            '[TELEPHONE]': rental['renter_phone'] or '',
+            '[telephone]': rental['renter_phone'] or '',
+            '[TEL]': rental['renter_phone'] or '',
+            
+            # Montants
+            '{{caution}}': f"{rental['rental_deposit']:.2f} €" if rental['rental_deposit'] else '0.00 €',
+            '{{montant_caution}}': f"{rental['rental_deposit']:.2f} €" if rental['rental_deposit'] else '0.00 €',
+            'montant_caution': f"{rental['rental_deposit']:.2f} €" if rental['rental_deposit'] else '0.00 €',
+            '[CAUTION]': f"{rental['rental_deposit']:.2f} €" if rental['rental_deposit'] else '0.00 €',
+            '{{prix}}': f"{rental['rental_price']:.2f} €" if rental['rental_price'] else '0.00 €',
+            '[PRIX]': f"{rental['rental_price']:.2f} €" if rental['rental_price'] else '0.00 €',
+            
+            # Dates
+            '{{date_debut}}': format_date(rental['start_date']),
+            '{{date_fin}}': format_date(rental['end_date']),
+            'date_debut': format_date(rental['start_date']),
+            'date_fin': format_date(rental['end_date']),
+            '[DATE_DEBUT]': format_date(rental['start_date']),
+            '[DATE_FIN]': format_date(rental['end_date']),
+            '{{duree}}': f"{rental['rental_duration']} jour(s)" if rental['rental_duration'] else '',
+            
+            # Items
+            '{{items}}': items_list_str,
+            '{{materiel}}': items_list_str,
+            '[ITEMS]': items_list_str,
+            '[MATERIEL]': items_list_str,
+            
+            # Date du jour
+            '{{date_jour}}': datetime.now().strftime('%d/%m/%Y'),
+            '[DATE]': datetime.now().strftime('%d/%m/%Y'),
+        }
+        
+        def replace_in_text(text):
+            """Remplacer tous les placeholders dans un texte"""
+            result = text
+            
+            # Remplacer les placeholders connus
+            for placeholder, value in all_placeholders.items():
+                result = result.replace(placeholder, str(value))
+            
+            # Patterns regex pour les placeholders avec "..."
+            regex_patterns = [
+                (r'Nom\s*[:\s]+\.{2,}', f"Nom : {renter_name}"),
+                (r'Prénom\s*[:\s]+\.{2,}', f"Prénom : {prenom}"),
+                (r'Adresse\s*[:\s]+\.{2,}', f"Adresse : {rental['renter_address'] or ''}"),
+                (r'Email\s*[:\s]+\.{2,}', f"Email : {rental['renter_email'] or ''}"),
+                (r'Téléphone\s*[:\s]+\.{2,}', f"Téléphone : {rental['renter_phone'] or ''}"),
+                (r'Caution\s*[:\s]+\.{2,}', f"Caution : {rental['rental_deposit']:.2f} €" if rental['rental_deposit'] else 'Caution : 0.00 €'),
+                (r'Montant\s*[:\s]+\.{2,}', f"Montant : {rental['rental_deposit']:.2f} €" if rental['rental_deposit'] else 'Montant : 0.00 €'),
+                (r'Date\s+de\s+début\s*[:\s]+\.{2,}', f"Date de début : {format_date(rental['start_date'])}"),
+                (r'Date\s+de\s+fin\s*[:\s]+\.{2,}', f"Date de fin : {format_date(rental['end_date'])}"),
+                (r'Durée\s*[:\s]+\.{2,}', f"Durée : {rental['rental_duration']} jour(s)" if rental['rental_duration'] else 'Durée : '),
+                (r'Matériel\s*[:\s]+\.{2,}', f"Matériel : {items_list_str}"),
+            ]
+            
+            for pattern, replacement in regex_patterns:
+                result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
+            
+            return result
+        
+        def replace_in_paragraph(paragraph):
+            """Remplacer les placeholders dans un paragraphe en préservant la mise en forme"""
+            for run in paragraph.runs:
+                original_text = run.text
+                new_text = replace_in_text(original_text)
+                if new_text != original_text:
+                    run.text = new_text
+            
+            # Si pas de runs ou le texte du paragraphe n'a pas été traité
+            full_text = paragraph.text
+            new_full_text = replace_in_text(full_text)
+            if new_full_text != full_text and not paragraph.runs:
+                paragraph.clear()
+                paragraph.add_run(new_full_text)
+        
+        # Parcourir tous les paragraphes
+        for paragraph in doc.paragraphs:
+            replace_in_paragraph(paragraph)
+        
+        # Parcourir les tableaux
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for paragraph in cell.paragraphs:
+                        replace_in_paragraph(paragraph)
+        
+        # Parcourir les en-têtes et pieds de page
+        for section in doc.sections:
+            # En-tête
+            header = section.header
+            for paragraph in header.paragraphs:
+                replace_in_paragraph(paragraph)
+            # Pied de page
+            footer = section.footer
+            for paragraph in footer.paragraphs:
+                replace_in_paragraph(paragraph)
+        
+        # Sauvegarder dans un BytesIO
+        output = BytesIO()
+        doc.save(output)
+        output.seek(0)
+        
+        # Nom de fichier sécurisé
+        safe_name = re.sub(r'[^\w\s-]', '', rental['renter_name'] or 'inconnu').strip().replace(' ', '_')
+        filename = f'caution_location_{rental_id}_{safe_name}.docx'
+        
+        return send_file(
+            output,
+            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            as_attachment=True,
+            download_name=filename
+        )
+    except Exception as e:
+        print(f'[API] ERREUR GET /api/rentals/{rental_id}/caution-doc: {str(e)}')
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 @app.route('/api/rental-statuses', methods=['GET'])
 def get_rental_statuses():
@@ -1596,7 +2349,7 @@ def get_rental_statuses():
         return jsonify({'success': True, 'statuses': statuses}), 200
     except Exception as e:
         print(f'[API] ERREUR GET /api/rental-statuses: {str(e)}')
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 @app.route('/api/rental-statuses', methods=['POST'])
 def create_rental_status():
@@ -1614,7 +2367,7 @@ def create_rental_status():
         return jsonify({'success': True, 'id': cursor.lastrowid}), 201
     except Exception as e:
         print(f'[API] ERREUR POST /api/rental-statuses: {str(e)}')
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 # ==================== OCR (TESSERACT) ====================
 
@@ -1675,7 +2428,7 @@ def ocr_image():
         print(f'[OCR] Erreur: {str(e)}')
         import traceback
         traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 def parse_ocr_text(text):
     """Parser le texte OCR pour extraire les informations utiles"""
@@ -1758,97 +2511,112 @@ def health_check():
     return jsonify({
         'success': True,
         'status': 'healthy',
+        'mode': APP_MODE,
         'database': 'connected' if os.path.exists(DB_PATH) else 'not found',
-        'ocr': 'available' if OCR_AVAILABLE else 'unavailable'
+        'ocr': 'available' if OCR_AVAILABLE else 'unavailable',
+        'docx': 'available' if DOCX_AVAILABLE else 'unavailable'
     }), 200
 
 # ==================== DÉMARRAGE ====================
 
 import subprocess
 import sys
-import signal
-import atexit
 
-nextjs_process = None
+# Configuration du démarrage
+FLASK_DEBUG = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true' and APP_MODE == 'development'
 
-def start_nextjs():
-    """Démarrer le serveur Next.js en arrière-plan"""
-    global nextjs_process
+def build_frontend():
+    """Construire le frontend Next.js si nécessaire"""
     frontend_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'horizon-ui-template')
     
     if not os.path.exists(frontend_dir):
         print(f"[ERREUR] Dossier frontend non trouvé: {frontend_dir}")
-        return None
+        return False
     
-    print("[Next.js] Démarrage du frontend...")
+    # Vérifier si le build existe déjà
+    if FRONTEND_AVAILABLE:
+        print("[BUILD] Frontend déjà buildé, prêt à servir.")
+        return True
     
-    # Déterminer la commande selon l'OS
-    if sys.platform == 'win32':
-        # Windows: utiliser shell=True pour que npx fonctionne
-        nextjs_process = subprocess.Popen(
-            'npx yarn dev',
+    print("[BUILD] Frontend non buildé. Construction en cours...")
+    print("[BUILD] Cela peut prendre quelques minutes...")
+    
+    try:
+        # Installer les dépendances si nécessaire
+        node_modules = os.path.join(frontend_dir, 'node_modules')
+        if not os.path.exists(node_modules):
+            print("[BUILD] Installation des dépendances (yarn install)...")
+            result = subprocess.run(
+                'yarn install' if sys.platform == 'win32' else ['yarn', 'install'],
+                cwd=frontend_dir,
+                shell=sys.platform == 'win32',
+                capture_output=True,
+                text=True
+            )
+            if result.returncode != 0:
+                print(f"[BUILD] Erreur yarn install: {result.stderr}")
+                return False
+        
+        # Build le frontend
+        print("[BUILD] Construction du frontend (yarn build)...")
+        result = subprocess.run(
+            'yarn build' if sys.platform == 'win32' else ['yarn', 'build'],
             cwd=frontend_dir,
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+            shell=sys.platform == 'win32',
+            capture_output=True,
+            text=True
         )
-    else:
-        # Linux/Mac
-        nextjs_process = subprocess.Popen(
-            ['npx', 'yarn', 'dev'],
-            cwd=frontend_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            preexec_fn=os.setsid
-        )
-    
-    # Thread pour afficher les logs Next.js
-    def print_nextjs_output():
-        for line in iter(nextjs_process.stdout.readline, b''):
-            try:
-                print(f"[Next.js] {line.decode('utf-8', errors='ignore').rstrip()}")
-            except:
-                pass
-    
-    output_thread = threading.Thread(target=print_nextjs_output, daemon=True)
-    output_thread.start()
-    
-    return nextjs_process
-
-def cleanup():
-    """Arrêter proprement le serveur Next.js"""
-    global nextjs_process
-    if nextjs_process:
-        print("\n[Next.js] Arrêt du frontend...")
-        try:
-            if sys.platform == 'win32':
-                nextjs_process.terminate()
-            else:
-                os.killpg(os.getpgid(nextjs_process.pid), signal.SIGTERM)
-        except:
-            pass
-
-atexit.register(cleanup)
+        if result.returncode != 0:
+            print(f"[BUILD] Erreur yarn build: {result.stderr}")
+            return False
+        
+        print("[BUILD] Frontend buildé avec succès!")
+        return True
+        
+    except Exception as e:
+        print(f"[BUILD] Erreur lors du build: {e}")
+        return False
 
 if __name__ == '__main__':
     print("=" * 60)
-    print("  DEMARRAGE CODE BAR CRM (API + Frontend)")
+    print("  CODE BAR CRM - Serveur Unifié")
     print("=" * 60)
     
     # Initialiser la base de données
     init_db()
     
-    # Démarrer Next.js en arrière-plan
-    start_nextjs()
+    # Vérifier/construire le frontend si demandé
+    auto_build = os.environ.get('AUTO_BUILD', 'false').lower() == 'true'
+    if not FRONTEND_AVAILABLE and auto_build:
+        build_frontend()
+        # Recharger la vérification
+        globals()['FRONTEND_AVAILABLE'] = check_frontend_build()
     
     print("\n" + "=" * 60)
-    print("  SERVEURS ACTIFS:")
-    print("    - API Flask:    http://localhost:5000/api")
-    print("    - Frontend:     http://localhost:3001")
+    print("  SERVEUR UNIFIE ACTIF")
+    print(f"    URL:      http://localhost:{SERVER_PORT}")
+    print(f"    Mode:     {APP_MODE}")
+    print(f"    Frontend: {'[OK] Disponible' if FRONTEND_AVAILABLE else '[KO] Non builde'}")
+    print(f"    OCR:      {'[OK] Disponible' if OCR_AVAILABLE else '[KO] Non disponible'}")
+    print(f"    DOCX:     {'[OK] Disponible' if DOCX_AVAILABLE else '[KO] Non disponible'}")
     print("=" * 60)
-    print("\nPour arreter les serveurs: Ctrl+C")
+    
+    if not FRONTEND_AVAILABLE:
+        print("\n[ATTENTION] Pour activer le frontend, executez :")
+        print("    cd horizon-ui-template")
+        print("    yarn install")
+        print("    yarn build")
+        print("    Puis relancez: python server.py")
+        print("\n    Ou lancez avec AUTO_BUILD=true :")
+        print("    AUTO_BUILD=true python server.py")
+    
+    print("\nPour arrêter le serveur: Ctrl+C")
     print("=" * 60 + "\n")
     
-    # Démarrer Flask
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    # Démarrer Flask (API + Frontend sur le même port)
+    app.run(
+        host='0.0.0.0',
+        port=SERVER_PORT,
+        debug=FLASK_DEBUG,
+        threaded=True  # Permettre plusieurs connexions simultanées (SSE)
+    )
