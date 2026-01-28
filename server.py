@@ -1,9 +1,24 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 Serveur unique pour le CRM Code-Barres
 Sert à la fois l'API REST et les fichiers statiques (HTML/CSS/JS)
 Base de données SQLite locale
 """
+
+import sys
+import io
+
+# Forcer l'encodage UTF-8 pour stdout et stderr sur Windows
+if sys.platform == 'win32':
+    # Réencoder stdout et stderr en UTF-8
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    else:
+        # Pour les versions Python plus anciennes
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 from flask import Flask, request, jsonify, send_from_directory, Response, send_file
 from flask_cors import CORS
@@ -72,6 +87,13 @@ def sanitize_string(value, max_length=500):
         value = str(value)
     # Supprimer les caractères de contrôle dangereux
     value = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', value)
+    # S'assurer que la chaîne peut être encodée en UTF-8
+    try:
+        # Tester l'encodage UTF-8
+        value.encode('utf-8')
+    except UnicodeEncodeError:
+        # Si l'encodage échoue, remplacer les caractères problématiques
+        value = value.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
     return value[:max_length].strip()
 
 def validate_positive_number(value, allow_zero=True):
@@ -195,13 +217,19 @@ def broadcast_event(event_type, data):
 DB_PATH = os.environ.get('DB_PATH', os.path.join('data', 'inventory.db'))
 print(f'[CONFIG] DB Path: {DB_PATH}')
 
-def sanitize_string(text):
-    """Nettoyer une chaîne de caractères pour éviter les problèmes d'encodage Unicode"""
-    if not text:
-        return text
+def sanitize_string(value, max_length=500):
+    """Nettoyer et limiter la longueur d'une chaîne, en gérant les caractères Unicode"""
+    if value is None:
+        return None
+    if not value:
+        return value
     try:
         # Convertir en string si ce n'est pas déjà le cas
-        text = str(text)
+        if not isinstance(value, str):
+            value = str(value)
+        
+        # Supprimer les caractères de contrôle dangereux
+        value = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', value)
         
         # Remplacer les caractères Unicode problématiques par des équivalents ASCII
         replacements = {
@@ -219,21 +247,22 @@ def sanitize_string(text):
         }
         
         for unicode_char, ascii_replacement in replacements.items():
-            text = text.replace(unicode_char, ascii_replacement)
+            value = value.replace(unicode_char, ascii_replacement)
         
-        # Encoder en UTF-8 puis décoder pour s'assurer que c'est valide
-        # Cela élimine les caractères non-encodables
+        # S'assurer que la chaîne peut être encodée en UTF-8
         try:
-            text = text.encode('utf-8', errors='replace').decode('utf-8')
+            value = value.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
         except:
-            # Si l'encodage échoue, utiliser une approche plus agressive
-            text = text.encode('ascii', errors='replace').decode('ascii')
+            # Si l'encodage UTF-8 échoue, utiliser ASCII comme fallback
+            value = value.encode('ascii', errors='replace').decode('ascii', errors='replace')
         
-        return text
+        # Limiter la longueur
+        return value[:max_length].strip()
     except Exception as e:
         # En cas d'erreur, retourner un message par défaut
         try:
-            error_msg = str(e).encode('ascii', errors='replace').decode('ascii')
+            error_msg = str(e)
+            error_msg = error_msg.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
             print(f'[ERREUR] Erreur lors de la sanitization: {error_msg}')
         except:
             print('[ERREUR] Erreur lors de la sanitization (encodage impossible)')
@@ -246,6 +275,11 @@ def sanitize_error(error):
             error_str = str(error)
         else:
             error_str = str(error)
+        # S'assurer que le message peut être encodé en UTF-8
+        try:
+            error_str = error_str.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
+        except:
+            pass
         return sanitize_string(error_str)
     except:
         return 'Une erreur est survenue'
@@ -1654,7 +1688,14 @@ def get_notifications():
                 })
             except Exception as msg_error:
                 # Si une notification spécifique cause une erreur, la remplacer par un message par défaut
-                print(f'[API] Erreur lors du traitement d\'une notification (ID: {row.get("id", "unknown")}): {str(msg_error)}')
+                try:
+                    error_msg = str(msg_error)
+                    # S'assurer que le message peut être encodé en UTF-8
+                    error_msg = error_msg.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
+                    safe_error_msg = sanitize_error(error_msg)
+                    print(f'[API] Erreur lors du traitement d\'une notification (ID: {row.get("id", "unknown")}): {safe_error_msg}')
+                except:
+                    print(f'[API] Erreur lors du traitement d\'une notification (ID: {row.get("id", "unknown")})')
                 notifications.append({
                     'id': row.get('id', 0),
                     'message': 'Message de notification (erreur d\'encodage)',
@@ -1672,21 +1713,36 @@ def get_notifications():
     except Exception as e:
         # Gérer les erreurs d'encodage de manière plus robuste
         error_msg = str(e)
-        # Essayer de convertir l'erreur en ASCII si elle contient des caractères Unicode
+        # S'assurer que le message d'erreur peut être encodé en UTF-8
         try:
-            error_msg = error_msg.encode('ascii', errors='replace').decode('ascii')
+            # Encoder en UTF-8 avec remplacement des caractères problématiques
+            error_msg = error_msg.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
         except:
             error_msg = 'Erreur lors de la récupération des notifications'
         
-        print(f'[API] ERREUR GET /api/notifications: {error_msg}')
+        # Utiliser sanitize_error pour nettoyer le message avant l'affichage
+        safe_error_msg = sanitize_error(error_msg)
+        try:
+            print(f'[API] ERREUR GET /api/notifications: {safe_error_msg}')
+        except:
+            # Si l'affichage échoue encore, utiliser un message générique
+            print('[API] ERREUR GET /api/notifications: Erreur lors de la récupération des notifications')
+        
         import traceback
         try:
-            traceback.print_exc()
+            # Capturer la traceback dans une chaîne pour éviter les problèmes d'encodage
+            import io
+            traceback_buffer = io.StringIO()
+            traceback.print_exc(file=traceback_buffer)
+            traceback_str = traceback_buffer.getvalue()
+            # Nettoyer la traceback avant l'affichage
+            traceback_str = traceback_str.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
+            print(traceback_str)
         except:
             # Si même l'affichage de la traceback échoue, ignorer
             pass
         
-        return jsonify({'success': False, 'error': sanitize_error(error_msg)}), 500
+        return jsonify({'success': False, 'error': safe_error_msg}), 500
 
 @app.route('/api/notifications/<int:notification_id>', methods=['DELETE'])
 def delete_notification(notification_id):
