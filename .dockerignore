@@ -1,0 +1,63 @@
+# Fichiers de développement
+node_modules
+.next
+out
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environnement Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Documentation développement
+*.md
+!README.md
+!DEPLOIEMENT_DOCKER.md
+
+# Fichiers temporaires
+*.log
+*.tmp
+*.temp
+
+# Fichiers de test
+bar.py
+pdf.py
+Untitled
+horizon-ui-template/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Variables d'environnement
+.env
+.env.*
+!.env.production.example
+
+# Cache
+.cache/
+.parcel-cache/
+.turbo/

@@ -24,15 +24,25 @@ from flask import Flask, request, jsonify, send_from_directory, Response, send_f
 from flask_cors import CORS
 import sqlite3
 import os
-from datetime import datetime
+import secrets
+from datetime import datetime, timedelta
 import requests
 import threading
 import queue
 import json
 import base64
 import re
+import urllib.parse
 from io import BytesIO
 from functools import wraps
+
+# Charger les variables d'environnement depuis le fichier .env
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    print('[CONFIG] Fichier .env chargé')
+except ImportError:
+    print('[CONFIG] python-dotenv non installé - variables d\'environnement système utilisées')
 
 # ==================== CONFIGURATION VIA VARIABLES D'ENVIRONNEMENT ====================
 
@@ -53,6 +63,116 @@ SERVER_PORT = int(os.environ.get('SERVER_PORT', 5000))
 print(f'[CONFIG] Mode: {APP_MODE}')
 print(f'[CONFIG] CORS Origins: {CORS_ORIGINS_LIST}')
 print(f'[CONFIG] Port: {SERVER_PORT}')
+
+# Fonction d'affichage sécurisée pour Windows
+def safe_print(msg):
+    """Print qui ne plante jamais sur Windows (Errno 22)"""
+    try:
+        print(msg)
+    except (OSError, IOError, UnicodeEncodeError):
+        try:
+            # Essayer avec ASCII uniquement
+            print(msg.encode('ascii', errors='replace').decode('ascii'))
+        except:
+            pass  # Abandonner silencieusement
+
+def safe_traceback():
+    """Afficher le traceback de manière sécurisée sur Windows"""
+    try:
+        import traceback
+        import io
+        buffer = io.StringIO()
+        traceback.print_exc(file=buffer)
+        safe_print(buffer.getvalue())
+    except:
+        pass  # Ignorer les erreurs de traceback
+
+# ==================== GESTION DES IMAGES ====================
+
+# Utiliser un chemin absolu basé sur le répertoire du script (évite les problèmes Windows/OneDrive)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+IMAGES_DIR = os.path.join(SCRIPT_DIR, 'data', 'images')
+
+def ensure_images_dir():
+    """Créer le dossier images s'il n'existe pas"""
+    try:
+        os.makedirs(IMAGES_DIR, exist_ok=True)
+        return True
+    except Exception as e:
+        safe_print(f'[IMG] Erreur création dossier images: {e}')
+        return False
+
+def save_uploaded_file(file_storage, serial_number, index=0):
+    """
+    Sauvegarder un fichier uploadé directement sur disque.
+    Simple et fiable - pas de Base64.
+    """
+    try:
+        safe_print(f'[IMG] save_uploaded_file: debut')
+        
+        if not ensure_images_dir():
+            safe_print(f'[IMG] Erreur: impossible de creer le dossier {IMAGES_DIR}')
+            return None
+
+        if not file_storage or not file_storage.filename:
+            safe_print('[IMG] Erreur: file_storage invalide')
+            return None
+
+        # Extension depuis le nom de fichier original
+        original_name = file_storage.filename
+        ext = original_name.rsplit('.', 1)[-1].lower() if '.' in original_name else 'jpg'
+        if ext not in ['jpg', 'jpeg', 'png', 'gif', 'webp']:
+            ext = 'jpg'
+
+        # Nom de fichier simple et unique
+        unique_id = secrets.token_hex(6)
+        safe_serial = re.sub(r'[^a-zA-Z0-9]', '', str(serial_number or 'img'))[:20]
+        filename = f"{safe_serial}_{unique_id}.{ext}"
+        filepath = os.path.join(IMAGES_DIR, filename)
+
+        safe_print(f'[IMG] Sauvegarde vers: {filepath}')
+        
+        # Sauvegarder directement
+        file_storage.save(filepath)
+        safe_print(f'[IMG] Fichier sauvegarde OK: {filename}')
+        return f"/api/images/{filename}"
+
+    except Exception as e:
+        safe_print(f'[IMG] Exception sauvegarde: {e}')
+        import traceback
+        traceback.print_exc()
+        return None
+
+def process_images_for_storage(image_data, serial_number):
+    """
+    Traiter les chemins d'images existants.
+    Retourne un JSON array des chemins API ou None.
+    """
+    if not image_data:
+        return None
+
+    try:
+        # Déjà un chemin API ou JSON de chemins
+        if isinstance(image_data, str):
+            if image_data.startswith('/api/images/'):
+                return json.dumps([image_data])
+            if image_data.startswith('['):
+                try:
+                    paths = json.loads(image_data)
+                    if isinstance(paths, list):
+                        valid = [p for p in paths if isinstance(p, str) and p.startswith('/api/images/')]
+                        return json.dumps(valid) if valid else None
+                except:
+                    pass
+        
+        if isinstance(image_data, list):
+            valid = [p for p in image_data if isinstance(p, str) and p.startswith('/api/images/')]
+            return json.dumps(valid) if valid else None
+
+        return None
+    except Exception as e:
+        safe_print(f'[IMG] Erreur traitement images: {e}')
+        return None
 
 # ==================== FONCTIONS DE VALIDATION ====================
 
@@ -162,21 +282,81 @@ except ImportError:
     DOCX_AVAILABLE = False
     print('[DOCX] python-docx non installé - pip install python-docx')
 
+# Génération PDF (modèle caution location)
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib import colors
+    from reportlab.pdfgen import canvas
+    PDF_AVAILABLE = True
+    print('[PDF] reportlab disponible')
+except ImportError:
+    PDF_AVAILABLE = False
+    print('[PDF] reportlab non installé - pip install reportlab')
+
+# PyPDF2 pour fusionner avec le modèle
+try:
+    from PyPDF2 import PdfReader, PdfWriter
+    PYPDF2_AVAILABLE = True
+    print('[PDF] PyPDF2 disponible')
+except ImportError:
+    PYPDF2_AVAILABLE = False
+    print('[PDF] PyPDF2 non installé - pip install PyPDF2')
+
+# FPDF pour génération simple de PDF
+try:
+    from fpdf import FPDF
+    FPDF_AVAILABLE = True
+    print('[PDF] fpdf disponible')
+except ImportError:
+    FPDF_AVAILABLE = False
+    print('[PDF] fpdf non installé - pip install fpdf')
+
 app = Flask(__name__, static_folder='.')
 
 # Configuration pour gérer les URLs longues (éviter erreur 414)
 # Augmenter la limite de taille de requête pour les données POST
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB
 
+# ==================== LOGS ERREURS (terminal) ====================
+def _log(level, msg, exc=None):
+    """Afficher un log avec horodatage dans le terminal (sécurisé Windows)."""
+    try:
+        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        line = f"[{ts}] [{level}] {msg}"
+        safe_print(line)
+    except:
+        pass  # Ignorer silencieusement les erreurs de log
+
 # Gestionnaire d'erreur pour les URLs trop longues (414)
 @app.errorhandler(414)
 def request_uri_too_large(error):
     """Gérer les erreurs 414 (Request-URI Too Long)"""
-    print(f'[ERREUR] URL trop longue (414): {request.url[:200]}...')
+    _log('ERREUR', f'URL trop longue (414): {request.url[:200]}...')
     return jsonify({
         'success': False,
         'error': 'URL trop longue. Veuillez utiliser POST pour envoyer des données volumineuses.'
     }), 414
+
+@app.errorhandler(500)
+def internal_error(error):
+    """Toute erreur 500 : log + traceback dans le terminal."""
+    _log('ERREUR', f'Erreur 500: {sanitize_error(error)}', error)
+    return jsonify({'success': False, 'error': sanitize_error(error)}), 500
+
+@app.errorhandler(Exception)
+def handle_exception(error):
+    """Exception non gérée : log + traceback dans le terminal."""
+    _log('ERREUR', f'Exception: {sanitize_error(error)}', error)
+    return jsonify({'success': False, 'error': sanitize_error(error)}), 500
+
+@app.before_request
+def log_request():
+    """Log chaque requête API dans le terminal pour le debug."""
+    if request.path.startswith('/api'):
+        _log('API', f"{request.method} {request.path}")
 
 # Configuration CORS sécurisée
 CORS(app, 
@@ -196,7 +376,11 @@ clients_lock = threading.Lock()
 def broadcast_event(event_type, data):
     """Diffuser un événement à tous les clients connectés"""
     message = f"data: {json.dumps({'type': event_type, 'data': data})}\n\n"
+    
+    
     with clients_lock:
+        client_count = len(clients)
+        
         disconnected_clients = []
         for client_queue in clients:
             try:
@@ -212,9 +396,13 @@ def broadcast_event(event_type, data):
         for client_queue in disconnected_clients:
             if client_queue in clients:
                 clients.remove(client_queue)
+        
+        success_count = client_count - len(disconnected_clients)
+        if success_count > 0:
+            safe_print(f'[SSE] Event {event_type} -> {success_count} client(s)')
 
-# Configuration base de données
-DB_PATH = os.environ.get('DB_PATH', os.path.join('data', 'inventory.db'))
+# Configuration base de données (utiliser chemin absolu par défaut)
+DB_PATH = os.environ.get('DB_PATH', os.path.join(SCRIPT_DIR, 'data', 'inventory.db'))
 print(f'[CONFIG] DB Path: {DB_PATH}')
 
 def sanitize_string(value, max_length=500):
@@ -321,24 +509,37 @@ def clean_existing_notifications():
         print(f'[DB] Erreur lors du nettoyage des notifications: {str(e)}')
 
 def create_notification(message, type, item_serial_number, conn, cursor):
-    """Créer une notification dans la base de données"""
+    """Créer une notification dans la base de données (avec item_hex_id pour navigation)"""
     try:
+        # Récupérer l'ID hexadécimal de l'item pour le lien depuis la notification
+        item_hex_id = None
+        if item_serial_number:
+            cursor.execute('SELECT hex_id FROM items WHERE serial_number = ?', (item_serial_number,))
+            row = cursor.fetchone()
+            if row and row['hex_id']:
+                item_hex_id = row['hex_id']
+            else:
+                # Backfill hex_id pour cet item
+                new_hex = generate_item_hex_id(cursor)
+                cursor.execute('UPDATE items SET hex_id = ? WHERE serial_number = ?', (new_hex, item_serial_number))
+                item_hex_id = new_hex
         # Nettoyer le message pour éviter les problèmes d'encodage
         clean_message = sanitize_notification_message(message)
         now = datetime.now().isoformat()
         cursor.execute('''
-            INSERT INTO notifications (message, type, item_serial_number, created_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO notifications (message, type, item_serial_number, item_hex_id, created_at)
+            VALUES (?, ?, ?, ?, ?)
         ''', (
             clean_message,
             type,
             item_serial_number,
+            item_hex_id,
             now
         ))
         notification_id = cursor.lastrowid
         # Ne pas afficher le message dans la console car il peut contenir des caractères Unicode
         # qui causent des erreurs d'encodage sur Windows
-        print(f'[API] Notification créée (ID: {notification_id})')
+        safe_print(f'[API] Notification créée (ID: {notification_id})')
         
         # Limiter à 100 notifications (supprimer les plus anciennes)
         cursor.execute('''
@@ -351,15 +552,13 @@ def create_notification(message, type, item_serial_number, conn, cursor):
         ''')
         deleted_count = cursor.rowcount
         if deleted_count > 0:
-            print(f'[API] {deleted_count} anciennes notifications supprimées')
+            safe_print(f'[API] {deleted_count} anciennes notifications supprimées')
     except Exception as e:
-        print(f'[API] Erreur lors de la création de la notification: {str(e)}')
-        import traceback
-        traceback.print_exc()
+        safe_print(f'[API] Erreur lors de la création de la notification: {str(e)}')
 
 def get_db():
     """Créer une connexion à la base de données"""
-    os.makedirs('data', exist_ok=True)
+    os.makedirs(os.path.join(SCRIPT_DIR, 'data'), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
@@ -409,6 +608,93 @@ def generate_next_item_id(cursor):
     # (ne devrait jamais arriver avec seulement 3 caractères)
     return 'aaa'
 
+def generate_item_hex_id(cursor):
+    """Générer un ID alphanumérique unique pour un item (format: A00-Z99)
+    A00, A01, ... A99, B00, B01, ... Z99 = 2600 IDs possibles
+    """
+    # Chercher le dernier hex_id utilisé (nouveau format A00-Z99)
+    cursor.execute('''
+        SELECT hex_id FROM items 
+        WHERE hex_id IS NOT NULL AND length(hex_id) = 3 
+        AND hex_id GLOB '[A-Z][0-9][0-9]'
+        ORDER BY hex_id DESC LIMIT 1
+    ''')
+    row = cursor.fetchone()
+    
+    if row and row['hex_id']:
+        try:
+            last_id = row['hex_id']
+            letter = last_id[0]
+            number = int(last_id[1:3])
+            
+            # Incrémenter
+            number += 1
+            if number > 99:
+                number = 0
+                # Passer à la lettre suivante
+                if letter == 'Z':
+                    letter = 'A'  # Retour au début (ne devrait jamais arriver avec 2600 IDs)
+                else:
+                    letter = chr(ord(letter) + 1)
+            
+            return f"{letter}{number:02d}"
+        except (ValueError, IndexError):
+            pass
+    
+    # Si pas de hex_id existant ou erreur, commencer à A00
+    return 'A00'
+
+def migrate_hex_ids():
+    """Migrer tous les hex_id vers le nouveau format alphanumérique (A00-Z99)"""
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        # Récupérer tous les items qui n'ont pas le nouveau format (A00-Z99)
+        cursor.execute('''
+            SELECT id FROM items 
+            WHERE hex_id IS NULL 
+               OR hex_id NOT GLOB '[A-Z][0-9][0-9]'
+            ORDER BY id ASC
+        ''')
+        items_to_update = cursor.fetchall()
+        
+        if items_to_update:
+            print(f'[DB] Migration de {len(items_to_update)} hex_id vers format A00-Z99...')
+            
+            # Trouver le dernier ID utilisé dans le nouveau format
+            cursor.execute('''
+                SELECT hex_id FROM items 
+                WHERE hex_id GLOB '[A-Z][0-9][0-9]'
+                ORDER BY hex_id DESC LIMIT 1
+            ''')
+            last_row = cursor.fetchone()
+            
+            if last_row and last_row['hex_id']:
+                letter = last_row['hex_id'][0]
+                number = int(last_row['hex_id'][1:3])
+            else:
+                letter = 'A'
+                number = -1  # Commencera à 0 après incrémentation
+            
+            for item_row in items_to_update:
+                item_id = item_row['id']
+                # Incrémenter
+                number += 1
+                if number > 99:
+                    number = 0
+                    letter = chr(ord(letter) + 1) if letter != 'Z' else 'A'
+                
+                new_id = f"{letter}{number:02d}"
+                cursor.execute('UPDATE items SET hex_id = ? WHERE id = ?', (new_id, item_id))
+            
+            conn.commit()
+            print(f'[DB] Migration hex_id terminée: {len(items_to_update)} items mis à jour')
+    except Exception as e:
+        print(f'[DB] Erreur migration hex_id: {str(e)}')
+    finally:
+        conn.close()
+
 def init_db():
     """Initialiser la base de données"""
     conn = get_db()
@@ -437,15 +723,19 @@ def init_db():
     print(f'[DB] Colonnes existantes dans items: {columns}')
     
     # Ajouter les nouvelles colonnes si elles n'existent pas
+    # SQLite n'accepte pas UNIQUE/DEFAULT complexes dans ALTER ADD COLUMN, donc on utilise seulement le type
     new_columns = {
         'item_id': 'TEXT',
-        'status': 'TEXT DEFAULT "en_stock"',
+        'hex_id': 'TEXT',  # ID hexadécimal unique pour navigation (notifications)
+        'status': 'TEXT',
         'item_type': 'TEXT',
         'brand': 'TEXT',
         'model': 'TEXT',
         'rental_end_date': 'TEXT',
         'current_rental_id': 'INTEGER',
-        'custom_data': 'TEXT'  # JSON pour stocker les champs personnalisés
+        'custom_data': 'TEXT',  # JSON pour stocker les champs personnalisés
+        'parent_id': 'INTEGER',  # ID du parent pour créer des groupes d'items
+        'display_order': 'INTEGER'  # Ordre d'affichage dans le groupe
     }
     
     for col_name, col_type in new_columns.items():
@@ -524,9 +814,18 @@ def init_db():
             message TEXT NOT NULL,
             type TEXT NOT NULL,
             item_serial_number TEXT,
+            item_hex_id TEXT,
             created_at TEXT NOT NULL
         )
     ''')
+    # Ajouter item_hex_id si la table existait déjà
+    cursor.execute("PRAGMA table_info(notifications)")
+    notif_columns = [c[1] for c in cursor.fetchall()]
+    if 'item_hex_id' not in notif_columns:
+        try:
+            cursor.execute('ALTER TABLE notifications ADD COLUMN item_hex_id TEXT')
+        except sqlite3.OperationalError:
+            pass
     
     conn.commit()
     
@@ -607,8 +906,8 @@ def init_db():
 
 # ==================== CONFIGURATION FRONTEND STATIQUE ====================
 
-# Chemin vers le build du frontend Next.js
-FRONTEND_BUILD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'horizon-ui-template', 'out')
+# Chemin vers le build du frontend Next.js (tout à la racine du projet)
+FRONTEND_BUILD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'out')
 
 def check_frontend_build():
     """Vérifier si le frontend est buildé"""
@@ -622,7 +921,7 @@ FRONTEND_AVAILABLE = check_frontend_build()
 if FRONTEND_AVAILABLE:
     print(f'[FRONTEND] Build trouvé dans: {FRONTEND_BUILD_DIR}')
 else:
-    print(f'[FRONTEND] Build non trouvé. Exécutez: cd horizon-ui-template && yarn build')
+    print(f'[FRONTEND] Build non trouvé. Exécutez: npm run build')
 
 # ==================== ROUTES FRONTEND (fichiers statiques) ====================
 
@@ -639,9 +938,8 @@ def serve_index():
             <h1>🔧 Frontend non buildé</h1>
             <p>Pour utiliser l'application, vous devez d'abord compiler le frontend :</p>
             <pre style="background: #f4f4f4; padding: 20px; display: inline-block; text-align: left;">
-cd horizon-ui-template
-yarn install
-yarn build
+npm install
+npm run build
             </pre>
             <p>Puis relancez le serveur :</p>
             <pre style="background: #f4f4f4; padding: 20px; display: inline-block;">python server.py</pre>
@@ -693,56 +991,77 @@ def serve_images(filename):
             return send_from_directory(img_dir, filename)
     return '', 404
 
-# Route catch-all pour les pages du frontend (doit être APRÈS les routes API)
-@app.route('/<path:path>')
-def serve_frontend_pages(path):
-    """Servir les pages du frontend (catch-all)"""
-    if not FRONTEND_AVAILABLE:
-        return '', 404
-    
-    # Ne pas intercepter les routes API
-    if path.startswith('api/'):
-        return '', 404
-    
-    # Essayer de servir le fichier directement
-    file_path = os.path.join(FRONTEND_BUILD_DIR, path)
-    if os.path.exists(file_path) and os.path.isfile(file_path):
-        directory = os.path.dirname(file_path)
-        filename = os.path.basename(file_path)
-        return send_from_directory(directory, filename)
-    
-    # Essayer avec .html
-    html_path = os.path.join(FRONTEND_BUILD_DIR, f'{path}.html')
-    if os.path.exists(html_path):
-        directory = os.path.dirname(html_path)
-        filename = os.path.basename(html_path)
-        return send_from_directory(directory, filename)
-    
-    # Essayer comme dossier avec index.html
-    index_path = os.path.join(FRONTEND_BUILD_DIR, path, 'index.html')
-    if os.path.exists(index_path):
-        return send_from_directory(os.path.join(FRONTEND_BUILD_DIR, path), 'index.html')
-    
-    # Fallback: retourner index.html pour le routing côté client
-    return send_from_directory(FRONTEND_BUILD_DIR, 'index.html')
+# ==================== API IMAGES ====================
+
+@app.route('/api/images/<filename>')
+def serve_image(filename):
+    """Servir une image sauvegardée"""
+    try:
+        # Sécurité: empêcher la traversée de répertoire
+        safe_filename = os.path.basename(filename)
+        return send_from_directory(IMAGES_DIR, safe_filename)
+    except Exception as e:
+        safe_print(f'[IMG] Erreur lecture image {filename}: {str(e)}')
+        return jsonify({'error': 'Image non trouvée'}), 404
+
+@app.route('/api/upload-image', methods=['POST'])
+def upload_image():
+    """Upload une image directement (sans Base64) - Simple et fiable"""
+    try:
+        safe_print(f'[IMG] Upload request - files: {list(request.files.keys())}')
+        
+        if 'file' not in request.files:
+            safe_print('[IMG] Erreur: pas de fichier dans la requete')
+            return jsonify({'success': False, 'error': 'Aucun fichier'}), 400
+        
+        file = request.files['file']
+        if not file or not file.filename:
+            safe_print('[IMG] Erreur: fichier vide')
+            return jsonify({'success': False, 'error': 'Fichier vide'}), 400
+        
+        safe_print(f'[IMG] Fichier recu: {file.filename}')
+        
+        # Récupérer le serial_number optionnel
+        serial_number = request.form.get('serialNumber', 'img')
+        
+        # Sauvegarder le fichier
+        path = save_uploaded_file(file, serial_number)
+        if path:
+            safe_print(f'[IMG] Upload reussi: {path}')
+            return jsonify({'success': True, 'path': path}), 200
+        else:
+            safe_print('[IMG] Erreur: save_uploaded_file a retourne None')
+            return jsonify({'success': False, 'error': 'Erreur sauvegarde fichier'}), 500
+            
+    except Exception as e:
+        safe_print(f'[IMG] Exception upload: {e}')
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 # ==================== API ITEMS ====================
 
 @app.route('/api/items', methods=['GET'])
 def get_items():
     """Récupérer tous les items"""
+    conn = None
     try:
         print('[API] GET /api/items - Récupération des items...')
         conn = get_db()
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM items ORDER BY last_updated DESC')
         rows = cursor.fetchall()
-        conn.close()
         
         items = []
         for row in rows:
             # Convertir le Row en dict pour accès sécurisé
             row_dict = dict(row)
+            # Backfill hex_id si manquant (ID hexadécimal unique pour notifications/navigation)
+            hex_id = row_dict.get('hex_id')
+            if not hex_id:
+                hex_id = generate_item_hex_id(cursor)
+                cursor.execute('UPDATE items SET hex_id = ? WHERE id = ?', (hex_id, row_dict['id']))
+                conn.commit()
             # Parser custom_data JSON
             custom_data = {}
             if row_dict.get('custom_data'):
@@ -754,6 +1073,7 @@ def get_items():
             items.append({
                 'id': row_dict.get('id'),
                 'itemId': row_dict.get('item_id'),
+                'hexId': hex_id,
                 'name': row_dict.get('name'),
                 'serialNumber': row_dict.get('serial_number'),
                 'quantity': row_dict.get('quantity', 1),
@@ -767,17 +1087,26 @@ def get_items():
                 'model': row_dict.get('model'),
                 'rentalEndDate': row_dict.get('rental_end_date'),
                 'currentRentalId': row_dict.get('current_rental_id'),
+                'parentId': row_dict.get('parent_id'),
+                'displayOrder': row_dict.get('display_order', 0),
                 'customData': custom_data,
                 'createdAt': row_dict.get('created_at'),
                 'lastUpdated': row_dict.get('last_updated')
             })
         
+        if conn:
+            conn.close()
         print(f'[API] GET /api/items - {len(items)} items retournés')
         return jsonify({'success': True, 'items': items}), 200
     except Exception as e:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
         print(f'[API] ERREUR GET /api/items: {str(e)}')
         import traceback
-        traceback.print_exc()
+        safe_traceback()
         return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 @app.route('/api/items/search', methods=['GET'])
@@ -792,21 +1121,30 @@ def search_item():
         conn = get_db()
         cursor = conn.cursor()
         
-        # Rechercher par numéro de série exact ou par code scanné
+        # Rechercher par numéro de série, code scanné, item_id ou hex_id
         cursor.execute('''
             SELECT * FROM items 
-            WHERE serial_number = ? OR scanned_code = ? OR item_id = ?
+            WHERE serial_number = ? OR scanned_code = ? OR item_id = ? OR hex_id = ?
             LIMIT 1
-        ''', (query, query, query))
+        ''', (query, query, query, query))
         
         row = cursor.fetchone()
         conn.close()
         
         if row:
             row_dict = dict(row)
+            hex_id = row_dict.get('hex_id')
+            if not hex_id:
+                conn = get_db()
+                cur = conn.cursor()
+                hex_id = generate_item_hex_id(cur)
+                cur.execute('UPDATE items SET hex_id = ? WHERE id = ?', (hex_id, row_dict['id']))
+                conn.commit()
+                conn.close()
             item = {
                 'id': row_dict.get('id'),
                 'itemId': row_dict.get('item_id'),
+                'hexId': hex_id,
                 'name': row_dict.get('name'),
                 'serialNumber': row_dict.get('serial_number'),
                 'quantity': row_dict.get('quantity', 1),
@@ -820,6 +1158,8 @@ def search_item():
                 'model': row_dict.get('model'),
                 'rentalEndDate': row_dict.get('rental_end_date'),
                 'currentRentalId': row_dict.get('current_rental_id'),
+                'parentId': row_dict.get('parent_id'),
+                'displayOrder': row_dict.get('display_order', 0),
                 'createdAt': row_dict.get('created_at'),
                 'lastUpdated': row_dict.get('last_updated')
             }
@@ -832,7 +1172,7 @@ def search_item():
     except Exception as e:
         print(f'[API] ERREUR GET /api/items/search: {str(e)}')
         import traceback
-        traceback.print_exc()
+        safe_traceback()
         return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 @app.route('/api/items', methods=['POST'])
@@ -842,13 +1182,18 @@ def create_item():
         data = request.get_json()
         if not data:
             return jsonify({'success': False, 'error': 'Données JSON invalides'}), 400
-        
-        print(f'[API] POST /api/items - Données reçues: {data}')
+
+        # Log sans l'image pour éviter [Errno 22] sur Windows (image Base64 trop grande)
+        try:
+            log_data = {k: (v[:100] + '...' if k == 'image' and isinstance(v, str) and len(v) > 100 else v) for k, v in data.items()}
+            safe_print(f'[API] POST /api/items - Données reçues: {log_data}')
+        except Exception as log_err:
+            safe_print(f'[API] POST /api/items - (log error: {log_err})')
         
         # Validation des champs requis
         missing_fields = validate_required_fields(data, ['name', 'serialNumber'])
         if missing_fields:
-            print(f'[API] ERREUR: Champs manquants: {missing_fields}')
+            safe_print(f'[API] ERREUR: Champs manquants: {missing_fields}')
             return jsonify({'success': False, 'error': f'Champs obligatoires manquants: {", ".join(missing_fields)}'}), 400
         
         # Sanitization des données
@@ -866,9 +1211,19 @@ def create_item():
         data['quantity'] = int(quantity)
         
         if not data.get('name') or not data.get('serialNumber'):
-            print('[API] ERREUR: Nom ou numéro de série manquant après sanitization')
+            safe_print('[API] ERREUR: Nom ou numéro de série manquant après sanitization')
             return jsonify({'success': False, 'error': 'Le nom et le numéro de série sont obligatoires'}), 400
-        
+
+        # Traiter les images: sauvegarder sur disque au lieu de stocker en Base64
+        if data.get('image'):
+            try:
+                safe_print('[API] Traitement des images...')
+                data['image'] = process_images_for_storage(data['image'], data['serialNumber'])
+                safe_print(f'[API] Images traitées: {str(data.get("image", "None"))[:100]}')
+            except Exception as img_err:
+                safe_print(f'[API] Erreur traitement images (ignorée): {str(img_err)}')
+                data['image'] = None  # Continuer sans images
+
         now = datetime.now().isoformat()
         conn = get_db()
         cursor = conn.cursor()
@@ -878,7 +1233,7 @@ def create_item():
         existing = cursor.fetchone()
         
         if existing:
-            print(f'[API] Item existant trouvé (ID: {existing["id"]}), mise à jour...')
+            safe_print(f'[API] Item existant trouvé (ID: {existing["id"]}), mise à jour...')
             # Mettre à jour l'item existant (ajouter la quantité)
             quantity_to_add = data.get('quantity', 1)
             old_quantity = existing['quantity']
@@ -912,7 +1267,7 @@ def create_item():
                 data.get('category'),
                 data.get('categoryDetails'),
                 data.get('image'),
-                data.get('scannedCode', data['serialNumber']),
+                data.get('scannedCode') or data['serialNumber'],
                 data.get('itemType'),
                 data.get('brand'),
                 data.get('model'),
@@ -921,12 +1276,13 @@ def create_item():
                 data['serialNumber']
             ))
             item_id = existing['id']
-            print(f'[API] Item mis à jour (ID: {item_id}, quantité: {new_quantity})')
+            safe_print(f'[API] Item mis à jour (ID: {item_id}, quantité: {new_quantity})')
         else:
-            print('[API] Nouvel item, création...')
-            # Générer un nouvel item_id
+            safe_print('[API] Nouvel item, création...')
+            # Générer un nouvel item_id et un ID hexadécimal unique
             item_id_code = generate_next_item_id(cursor)
-            print(f'[API] Nouvel item_id généré: {item_id_code}')
+            hex_id = generate_item_hex_id(cursor)
+            safe_print(f'[API] Nouvel item_id généré: {item_id_code}, hex_id: {hex_id}')
             
             # Préparer custom_data pour nouvel item
             custom_data = data.get('customData')
@@ -934,18 +1290,19 @@ def create_item():
             
             # Créer un nouvel item
             cursor.execute('''
-                INSERT INTO items (item_id, name, serial_number, quantity, category, category_details, 
+                INSERT INTO items (item_id, hex_id, name, serial_number, quantity, category, category_details, 
                                  image, scanned_code, item_type, brand, model, status, custom_data, created_at, last_updated)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 item_id_code,
+                hex_id,
                 data['name'],
                 data['serialNumber'],
                 data.get('quantity', 1),
                 data.get('category'),
                 data.get('categoryDetails'),
                 data.get('image'),
-                data.get('scannedCode', data['serialNumber']),
+                data.get('scannedCode') or data['serialNumber'],
                 data.get('itemType'),
                 data.get('brand'),
                 data.get('model'),
@@ -968,46 +1325,54 @@ def create_item():
                 now
             ))
             
-            print(f'[API] Nouvel item créé (ID: {item_id})')
-        
-        # Créer une notification avec heure
+            safe_print(f'[API] Nouvel item créé (ID: {item_id})')
+
+        # Créer une notification avec heure (format simplifié pour éviter Errno 22 sur Windows)
         try:
-            time_str = datetime.now().strftime('%H:%M:%S')
-            date_str = datetime.now().strftime('%d/%m/%Y')
-        except:
-            time_str = datetime.now().strftime('%H:%M:%S')
-            date_str = datetime.now().strftime('%d/%m/%Y')
+            now_dt = datetime.now()
+            time_str = f"{now_dt.hour:02d}:{now_dt.minute:02d}:{now_dt.second:02d}"
+            date_str = f"{now_dt.day:02d}/{now_dt.month:02d}/{now_dt.year}"
+        except Exception as dt_err:
+            safe_print(f'[API] Erreur date/heure: {dt_err}')
+            time_str = "00:00:00"
+            date_str = "01/01/2025"
         
-        if existing:
-            create_notification(
-                f'📊 Modification de quantité - Item "{data["name"]}" ({data["serialNumber"]}) : {old_quantity} -> {new_quantity} | {date_str} {time_str}',
-                'success',
-                data['serialNumber'],
-                conn,
-                cursor
-            )
-        else:
-            create_notification(
-                f'✨ Nouvel item créé - "{data["name"]}" ({data["serialNumber"]}) | {date_str} {time_str}',
-                'success',
-                data['serialNumber'],
-                conn,
-                cursor
-            )
+        try:
+            if existing:
+                create_notification(
+                    f'Modification de quantite - Item "{data["name"]}" ({data["serialNumber"]}) : {old_quantity} -> {new_quantity} | {date_str} {time_str}',
+                    'success',
+                    data['serialNumber'],
+                    conn,
+                    cursor
+                )
+            else:
+                create_notification(
+                    f'Nouvel item cree - "{data["name"]}" ({data["serialNumber"]}) | {date_str} {time_str}',
+                    'success',
+                    data['serialNumber'],
+                    conn,
+                    cursor
+                )
+        except Exception as notif_err:
+            safe_print(f'[API] Erreur notification (non bloquante): {notif_err}')
         
-        conn.commit()
-        conn.close()
+        try:
+            conn.commit()
+        except Exception as commit_err:
+            safe_print(f'[API] Erreur commit DB: {commit_err}')
+            raise commit_err
+        finally:
+            conn.close()
         
         # Diffuser l'événement à tous les clients
         broadcast_event('items_changed', {'action': 'created' if not existing else 'updated', 'id': item_id})
         broadcast_event('notifications_changed', {})
-        
-        print(f'[API] POST /api/items - Succès (ID: {item_id})')
+
+        safe_print(f'[API] POST /api/items - Succès (ID: {item_id})')
         return jsonify({'success': True, 'id': item_id}), 201
     except Exception as e:
-        print(f'[API] ERREUR POST /api/items: {str(e)}')
-        import traceback
-        traceback.print_exc()
+        safe_print(f'[API] ERREUR POST /api/items: {str(e)}')
         return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 @app.route('/api/items/<serial_number>', methods=['PUT'])
@@ -1015,18 +1380,29 @@ def update_item(serial_number):
     """Mettre à jour un item"""
     try:
         data = request.get_json()
+
+        # Traiter les images si présentes
+        if data.get('image'):
+            try:
+                safe_print('[API] PUT - Traitement des images...')
+                data['image'] = process_images_for_storage(data['image'], serial_number)
+            except Exception as img_err:
+                safe_print(f'[API] PUT - Erreur images (ignorée): {str(img_err)}')
+                data['image'] = None
+
         conn = get_db()
         cursor = conn.cursor()
-        
+
         # Récupérer l'item existant pour comparer les valeurs
         cursor.execute('SELECT * FROM items WHERE serial_number = ?', (serial_number,))
-        existing = cursor.fetchone()
-        if not existing:
+        existing_row = cursor.fetchone()
+        if not existing_row:
             conn.close()
             return jsonify({'success': False, 'error': 'Item non trouvé'}), 404
-        
+        existing = dict(existing_row)
+
         now = datetime.now().isoformat()
-        
+
         # Mapping des champs API vers colonnes DB
         field_mapping = {
             'name': 'name',
@@ -1041,15 +1417,15 @@ def update_item(serial_number):
             'itemType': 'item_type',
             'status': 'status'
         }
-        
+
         # Construire la requête de mise à jour et enregistrer l'historique
         update_fields = []
         update_values = []
         history_entries = []
-        
+
         for api_field, db_column in field_mapping.items():
             if api_field in data:
-                old_value = existing[db_column] if existing else None
+                old_value = existing.get(db_column)
                 new_value = data[api_field]
                 
                 # Convertir en string pour la comparaison
@@ -1201,7 +1577,7 @@ def update_item(serial_number):
     except Exception as e:
         print(f'[API] ERREUR PUT /api/items/{serial_number}: {str(e)}')
         import traceback
-        traceback.print_exc()
+        safe_traceback()
         return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 @app.route('/api/events', methods=['GET'])
@@ -1213,6 +1589,9 @@ def stream_events():
         
         with clients_lock:
             clients.append(client_queue)
+            client_count = len(clients)
+        
+        print(f'[SSE] Client connected. Total: {client_count}')
         
         try:
             # Envoyer un message de connexion
@@ -1235,6 +1614,9 @@ def stream_events():
             with clients_lock:
                 if client_queue in clients:
                     clients.remove(client_queue)
+                client_count = len(clients)
+            
+            print(f'[SSE] Client disconnected. Remaining: {client_count}')
     
     return Response(event_stream(), mimetype='text/event-stream', headers={
         'Cache-Control': 'no-cache',
@@ -1271,10 +1653,65 @@ def get_item_history(serial_number):
         print(f'[API] ERREUR GET /api/items/{serial_number}/history: {str(e)}')
         return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
-@app.route('/api/items/<serial_number>', methods=['DELETE'])
+@app.route('/api/items/delete-all', methods=['POST'])
+def delete_all_items():
+    """Supprimer tous les items de l'inventaire"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Compter les items avant suppression
+        cursor.execute('SELECT COUNT(*) as count FROM items')
+        count_row = cursor.fetchone()
+        item_count = count_row['count'] if count_row else 0
+        
+        # Supprimer tous les items
+        cursor.execute('DELETE FROM items')
+        
+        # Réinitialiser l'auto-increment
+        cursor.execute('DELETE FROM sqlite_sequence WHERE name="items"')
+        
+        conn.commit()
+        
+        # Créer une notification
+        try:
+            time_str = datetime.now().strftime('%H:%M:%S')
+            date_str = datetime.now().strftime('%d/%m/%Y')
+        except:
+            time_str = datetime.now().strftime('%H:%M:%S')
+            date_str = datetime.now().strftime('%d/%m/%Y')
+        
+        create_notification(
+            f'🗑️ Inventaire vidé - {item_count} article(s) supprimé(s) | {date_str} {time_str}',
+            'warning',
+            None,
+            conn,
+            cursor
+        )
+        
+        conn.commit()
+        conn.close()
+        
+        # Broadcaster la suppression
+        broadcast_sse_event('items_changed', {
+            'action': 'all_deleted',
+            'count': item_count
+        })
+        broadcast_sse_event('notifications_changed', {})
+        
+        return jsonify({'success': True, 'count': item_count})
+        
+    except Exception as e:
+        print(f'[API] ERREUR DELETE /api/items/delete-all: {str(e)}')
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
+
+@app.route('/api/items/<path:serial_number>', methods=['DELETE'])
 def delete_item(serial_number):
     """Supprimer un item"""
     try:
+        # Décoder l'URL pour gérer les caractères spéciaux comme /
+        serial_number = urllib.parse.unquote(serial_number)
+        
         conn = get_db()
         cursor = conn.cursor()
         
@@ -1314,6 +1751,125 @@ def delete_item(serial_number):
         
         return jsonify({'success': True}), 200
     except Exception as e:
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
+
+# ==================== API GROUPES/HIÉRARCHIE D'ITEMS ====================
+
+@app.route('/api/items/<int:item_id>/set-parent', methods=['POST'])
+def set_item_parent(item_id):
+    """Définir un item comme enfant d'un autre item (créer une relation parent-enfant)"""
+    try:
+        data = request.get_json()
+        parent_id = data.get('parentId')  # None pour retirer du groupe
+        display_order = data.get('displayOrder', 0)
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Vérifier que l'item existe
+        cursor.execute('SELECT id FROM items WHERE id = ?', (item_id,))
+        if not cursor.fetchone():
+            conn.close()
+            return jsonify({'success': False, 'error': 'Item non trouvé'}), 404
+        
+        # Si parent_id est fourni, vérifier qu'il existe et n'est pas l'item lui-même
+        if parent_id is not None:
+            if parent_id == item_id:
+                conn.close()
+                return jsonify({'success': False, 'error': 'Un item ne peut pas être son propre parent'}), 400
+            
+            cursor.execute('SELECT id FROM items WHERE id = ?', (parent_id,))
+            if not cursor.fetchone():
+                conn.close()
+                return jsonify({'success': False, 'error': 'Item parent non trouvé'}), 404
+            
+            # Vérifier qu'on ne crée pas de boucle (l'item parent ne doit pas être un descendant de l'item actuel)
+            cursor.execute('SELECT parent_id FROM items WHERE id = ?', (parent_id,))
+            parent_row = cursor.fetchone()
+            if parent_row and parent_row['parent_id'] == item_id:
+                conn.close()
+                return jsonify({'success': False, 'error': 'Impossible de créer une relation circulaire'}), 400
+        
+        # Mettre à jour la relation
+        cursor.execute('''
+            UPDATE items 
+            SET parent_id = ?, display_order = ?
+            WHERE id = ?
+        ''', (parent_id, display_order, item_id))
+        
+        conn.commit()
+        conn.close()
+        
+        # Diffuser l'événement
+        broadcast_event('items_changed', {'action': 'hierarchy_updated', 'itemId': item_id})
+        
+        return jsonify({'success': True}), 200
+        
+    except Exception as e:
+        print(f'[API] ERREUR POST /api/items/{item_id}/set-parent: {str(e)}')
+        import traceback
+        safe_traceback()
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
+
+@app.route('/api/items/<int:item_id>/remove-parent', methods=['POST'])
+def remove_item_parent(item_id):
+    """Retirer un item de son groupe (mettre parent_id à NULL)"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            UPDATE items 
+            SET parent_id = NULL, display_order = 0
+            WHERE id = ?
+        ''', (item_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        # Diffuser l'événement
+        broadcast_event('items_changed', {'action': 'hierarchy_updated', 'itemId': item_id})
+        
+        return jsonify({'success': True}), 200
+        
+    except Exception as e:
+        print(f'[API] ERREUR POST /api/items/{item_id}/remove-parent: {str(e)}')
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
+
+@app.route('/api/items/reorder-hierarchy', methods=['POST'])
+def reorder_item_hierarchy():
+    """Réorganiser l'ordre des items dans la hiérarchie"""
+    try:
+        data = request.get_json()
+        items_order = data.get('items', [])  # [{id: 1, parentId: null, displayOrder: 0}, ...]
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Mettre à jour chaque item
+        for item_data in items_order:
+            item_id = item_data.get('id')
+            parent_id = item_data.get('parentId')
+            display_order = item_data.get('displayOrder', 0)
+            
+            cursor.execute('''
+                UPDATE items 
+                SET parent_id = ?, display_order = ?
+                WHERE id = ?
+            ''', (parent_id, display_order, item_id))
+        
+        conn.commit()
+        conn.close()
+        
+        # Diffuser l'événement
+        broadcast_event('items_changed', {'action': 'hierarchy_reordered'})
+        
+        return jsonify({'success': True}), 200
+        
+    except Exception as e:
+        print(f'[API] ERREUR POST /api/items/reorder-hierarchy: {str(e)}')
+        import traceback
+        safe_traceback()
         return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 # ==================== API CATEGORIES ====================
@@ -1656,9 +2212,9 @@ def get_notifications():
         conn = get_db()
         cursor = conn.cursor()
         
-        # Récupérer les 50 dernières notifications
+        # Récupérer les 50 dernières notifications (avec item_hex_id pour navigation)
         cursor.execute('''
-            SELECT id, message, type, item_serial_number, created_at
+            SELECT id, message, type, item_serial_number, item_hex_id, created_at
             FROM notifications
             ORDER BY created_at DESC
             LIMIT 50
@@ -1669,9 +2225,10 @@ def get_notifications():
         
         # Traiter chaque notification individuellement pour gérer les erreurs d'encodage
         for row in rows:
+            row_dict = dict(row)  # sqlite3.Row n'a pas .get(), convertir en dict
             try:
                 # Récupérer le message et le sanitizer
-                raw_message = row['message']
+                raw_message = row_dict.get('message')
                 if raw_message is None:
                     raw_message = ''
                 
@@ -1679,12 +2236,13 @@ def get_notifications():
                 clean_message = sanitize_notification_message(raw_message)
                 
                 notifications.append({
-                    'id': row['id'],
+                    'id': row_dict.get('id'),
                     'message': clean_message,
-                    'type': row['type'],
-                    'itemSerialNumber': row['item_serial_number'],
-                    'timestamp': row['created_at'],
-                    'created_at': row['created_at']  # Alias pour compatibilité
+                    'type': row_dict.get('type'),
+                    'itemSerialNumber': row_dict.get('item_serial_number'),
+                    'itemHexId': row_dict.get('item_hex_id'),
+                    'timestamp': row_dict.get('created_at'),
+                    'created_at': row_dict.get('created_at')  # Alias pour compatibilité
                 })
             except Exception as msg_error:
                 # Si une notification spécifique cause une erreur, la remplacer par un message par défaut
@@ -1693,16 +2251,17 @@ def get_notifications():
                     # S'assurer que le message peut être encodé en UTF-8
                     error_msg = error_msg.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
                     safe_error_msg = sanitize_error(error_msg)
-                    print(f'[API] Erreur lors du traitement d\'une notification (ID: {row.get("id", "unknown")}): {safe_error_msg}')
+                    print(f'[API] Erreur lors du traitement d\'une notification (ID: {row_dict.get("id", "unknown")}): {safe_error_msg}')
                 except:
-                    print(f'[API] Erreur lors du traitement d\'une notification (ID: {row.get("id", "unknown")})')
+                    print(f'[API] Erreur lors du traitement d\'une notification (ID: {row_dict.get("id", "unknown")})')
                 notifications.append({
-                    'id': row.get('id', 0),
+                    'id': row_dict.get('id', 0),
                     'message': 'Message de notification (erreur d\'encodage)',
-                    'type': row.get('type', 'info'),
-                    'itemSerialNumber': row.get('item_serial_number'),
-                    'timestamp': row.get('created_at', ''),
-                    'created_at': row.get('created_at', '')
+                    'type': row_dict.get('type', 'info'),
+                    'itemSerialNumber': row_dict.get('item_serial_number'),
+                    'itemHexId': row_dict.get('item_hex_id'),
+                    'timestamp': row_dict.get('created_at', ''),
+                    'created_at': row_dict.get('created_at', '')
                 })
         
         conn.close()
@@ -1774,7 +2333,7 @@ def delete_notification(notification_id):
     except Exception as e:
         print(f'[API] ERREUR DELETE /api/notifications/{notification_id}: {str(e)}')
         import traceback
-        traceback.print_exc()
+        safe_traceback()
         return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 @app.route('/api/notifications', methods=['DELETE'])
@@ -1804,9 +2363,10 @@ def proxy_gtinsearch():
     try:
         gtin = request.args.get('gtin')
         if not gtin:
+            _log('ERREUR', 'Paramètre gtin manquant')
             return jsonify({'success': False, 'error': 'Paramètre gtin manquant'}), 400
         
-        print(f'[Proxy] Recherche produit pour code: {gtin}')
+        _log('INFO', f'Recherche produit pour code: {gtin}')
         
         # Headers communs pour simuler un navigateur
         headers = {
@@ -1818,7 +2378,7 @@ def proxy_gtinsearch():
         
         # 1. Essayer Open Food Facts d'abord (gratuit, pas de limite)
         try:
-            print(f'[Proxy] Essai Open Food Facts...')
+            _log('INFO', 'Essai Open Food Facts...')
             off_url = f'https://world.openfoodfacts.org/api/v0/product/{gtin}.json'
             off_response = requests.get(off_url, timeout=8, headers=headers)
             
@@ -1828,21 +2388,29 @@ def proxy_gtinsearch():
                     product = off_data['product']
                     name = product.get('product_name') or product.get('product_name_fr') or product.get('generic_name')
                     if name:
-                        print(f'[Proxy] Open Food Facts: trouvé "{name}"')
+                        _log('INFO', f'Open Food Facts: trouvé "{name}"')
+                        # Récupérer les images disponibles
+                        images = []
+                        if product.get('image_url'):
+                            images.append(product.get('image_url'))
+                        elif product.get('image_front_url'):
+                            images.append(product.get('image_front_url'))
+                        
                         return jsonify({
                             'success': True,
                             'name': name,
                             'brand': product.get('brands', ''),
                             'category': product.get('categories', ''),
-                            'image': product.get('image_url', ''),
+                            'image': images[0] if images else '',
+                            'images': images,
                             'source': 'Open Food Facts'
                         }), 200
         except Exception as e:
-            print(f'[Proxy] Open Food Facts erreur: {str(e)}')
+            _log('INFO', f'Open Food Facts erreur: {str(e)}')
         
         # 2. Essayer UPC Item DB (gratuit, limité)
         try:
-            print(f'[Proxy] Essai UPC Item DB...')
+            _log('INFO', 'Essai UPC Item DB...')
             upc_url = f'https://api.upcitemdb.com/prod/trial/lookup?upc={gtin}'
             upc_response = requests.get(upc_url, timeout=8, headers={
                 **headers,
@@ -1855,49 +2423,54 @@ def proxy_gtinsearch():
                     item = upc_data['items'][0]
                     name = item.get('title')
                     if name:
-                        print(f'[Proxy] UPC Item DB: trouvé "{name}"')
+                        _log('INFO', f'UPC Item DB: trouvé "{name}"')
+                        images = item.get('images', [])
                         return jsonify({
                             'success': True,
                             'name': name,
                             'brand': item.get('brand', ''),
                             'category': item.get('category', ''),
-                            'image': item.get('images', [''])[0] if item.get('images') else '',
+                            'image': images[0] if images else '',
+                            'images': images,
                             'source': 'UPC Item DB'
                         }), 200
         except Exception as e:
-            print(f'[Proxy] UPC Item DB erreur: {str(e)}')
+            _log('INFO', f'UPC Item DB erreur: {str(e)}')
         
         # 3. Essayer GTINsearch en dernier (souvent bloqué)
         try:
-            print(f'[Proxy] Essai GTINsearch...')
+            _log('INFO', 'Essai GTINsearch...')
             gtin_url = f'https://gtinsearch.org/api?gtin={gtin}'
             gtin_response = requests.get(gtin_url, timeout=8, headers=headers)
             
             if gtin_response.status_code == 200:
                 gtin_data = gtin_response.json()
                 if gtin_data.get('name'):
-                    print(f'[Proxy] GTINsearch: trouvé "{gtin_data["name"]}"')
+                    _log('INFO', f'GTINsearch: trouvé "{gtin_data["name"]}"')
                     return jsonify({
                         'success': True,
                         'name': gtin_data['name'],
                         'brand': gtin_data.get('brand', ''),
                         'category': gtin_data.get('category', ''),
+                        'images': [],
                         'source': 'GTINsearch'
                     }), 200
             else:
-                print(f'[Proxy] GTINsearch: HTTP {gtin_response.status_code}')
+                _log('INFO', f'GTINsearch: HTTP {gtin_response.status_code}')
         except Exception as e:
-            print(f'[Proxy] GTINsearch erreur: {str(e)}')
+            _log('INFO', f'GTINsearch erreur: {str(e)}')
         
         # Aucune API n'a trouvé le produit
-        print(f'[Proxy] Aucun résultat trouvé pour: {gtin}')
+        _log('INFO', f'Aucun résultat trouvé pour: {gtin}')
         return jsonify({'success': False, 'error': 'Produit non trouvé', 'name': None}), 200
             
     except Exception as e:
-        print(f'[Proxy] Erreur inattendue: {str(e)}')
-        import traceback
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': sanitize_error(e)}), 200
+        _log('ERREUR', f'Erreur proxy gtinsearch: {str(e)}', e)
+        # S'assurer de retourner un JSON valide même en cas d'erreur
+        try:
+            return jsonify({'success': False, 'error': str(e)}), 200
+        except:
+            return jsonify({'success': False, 'error': 'Erreur interne'}), 200
 
 @app.route('/api/proxy/openfoodfacts', methods=['GET'])
 def proxy_openfoodfacts():
@@ -1934,12 +2507,12 @@ def proxy_openfoodfacts():
     except requests.exceptions.RequestException as e:
         print(f'[Proxy] Open Food Facts erreur: {str(e)}')
         import traceback
-        traceback.print_exc()
+        safe_traceback()
         return jsonify({'success': False, 'status': 0, 'error': sanitize_error(e)}), 200
     except Exception as e:
         print(f'[Proxy] Open Food Facts erreur inattendue: {str(e)}')
         import traceback
-        traceback.print_exc()
+        safe_traceback()
         return jsonify({'success': False, 'status': 0, 'error': sanitize_error(e)}), 200
 
 @app.route('/api/proxy/openfoodfacts/search', methods=['GET'])
@@ -1975,14 +2548,85 @@ def proxy_openfoodfacts_search():
         print(f'[Proxy] Open Food Facts recherche timeout')
         return jsonify({'success': False, 'products': [], 'error': 'Timeout'}), 200
     except requests.exceptions.RequestException as e:
+        print(f'[Proxy] Open Food Facts recherche erreur réseau: {str(e)}')
+        return jsonify({'success': False, 'products': [], 'error': str(e)}), 200
+    except Exception as e:
+        print(f'[Proxy] Open Food Facts recherche erreur inattendue: {str(e)}')
+        import traceback
+        safe_traceback()
+        return jsonify({'success': False, 'products': [], 'error': sanitize_error(e)}), 200
+
+@app.route('/api/proxy/image', methods=['GET'])
+def proxy_image():
+    """Proxy pour récupérer des images externes et les convertir en base64 (contourne CORS)"""
+    try:
+        image_url = request.args.get('url')
+        if not image_url:
+            return jsonify({'success': False, 'error': 'Paramètre url manquant'}), 400
+        
+        print(f'[Proxy] Récupération image depuis: {image_url}')
+        
+        # Vérifier que l'URL est une image
+        if not any(ext in image_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']):
+            print(f'[Proxy] URL ne semble pas être une image')
+        
+        # Récupérer l'image
+        response = requests.get(image_url, timeout=15, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'image/*'
+        })
+        
+        print(f'[Proxy] Image status: {response.status_code}')
+        
+        if response.status_code != 200:
+            print(f'[Proxy] Erreur HTTP lors de la récupération: {response.status_code}')
+            return jsonify({'success': False, 'error': f'HTTP {response.status_code}'}), 200
+        
+        # Vérifier le content-type
+        content_type = response.headers.get('Content-Type', '')
+        print(f'[Proxy] Content-Type: {content_type}')
+        
+        if not content_type.startswith('image/'):
+            print(f'[Proxy] Content-Type invalide: {content_type}')
+            return jsonify({'success': False, 'error': f'Type de contenu invalide: {content_type}'}), 200
+        
+        # Convertir en base64
+        import base64
+        image_base64 = base64.b64encode(response.content).decode('utf-8')
+        data_uri = f'data:{content_type};base64,{image_base64}'
+        
+        print(f'[Proxy] Image converted to base64 ({len(image_base64)} chars)')
+        
+        return jsonify({
+            'success': True,
+            'image': data_uri,
+            'contentType': content_type
+        }), 200
+        
+    except requests.exceptions.Timeout:
+        print(f'[Proxy] Timeout lors de la récupération de l\'image')
+        return jsonify({'success': False, 'error': 'Timeout'}), 200
+    except requests.exceptions.RequestException as e:
+        print(f'[Proxy] Erreur réseau: {str(e)}')
+        return jsonify({'success': False, 'error': f'Erreur réseau: {str(e)}'}), 200
+    except Exception as e:
+        print(f'[Proxy] Erreur inattendue: {str(e)}')
+        import traceback
+        safe_traceback()
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 200
+            
+    except requests.exceptions.Timeout:
+        print(f'[Proxy] Open Food Facts recherche timeout')
+        return jsonify({'success': False, 'products': [], 'error': 'Timeout'}), 200
+    except requests.exceptions.RequestException as e:
         print(f'[Proxy] Open Food Facts recherche erreur: {str(e)}')
         import traceback
-        traceback.print_exc()
+        safe_traceback()
         return jsonify({'success': False, 'products': [], 'error': sanitize_error(e)}), 200
     except Exception as e:
         print(f'[Proxy] Open Food Facts recherche erreur inattendue: {str(e)}')
         import traceback
-        traceback.print_exc()
+        safe_traceback()
         return jsonify({'success': False, 'products': [], 'error': sanitize_error(e)}), 200
 
 # ==================== API LOCATIONS ====================
@@ -2030,7 +2674,7 @@ def get_rentals():
     except Exception as e:
         print(f'[API] ERREUR GET /api/rentals: {str(e)}')
         import traceback
-        traceback.print_exc()
+        safe_traceback()
         return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 @app.route('/api/rentals', methods=['POST'])
@@ -2041,19 +2685,21 @@ def create_rental():
         if not data:
             return jsonify({'success': False, 'error': 'Données JSON invalides'}), 400
         
-        # Validation des champs requis
-        required_fields = ['renterName', 'renterEmail', 'renterPhone', 'rentalPrice', 'rentalDeposit', 'rentalDuration', 'startDate', 'endDate', 'itemsData']
+        # Validation des champs requis (email et téléphone sont optionnels)
+        required_fields = ['renterName', 'rentalPrice', 'rentalDeposit', 'rentalDuration', 'startDate', 'endDate', 'itemsData']
         missing_fields = validate_required_fields(data, required_fields)
         if missing_fields:
             return jsonify({'success': False, 'error': f'Champs obligatoires manquants: {", ".join(missing_fields)}'}), 400
         
-        # Validation de l'email
-        if not validate_email(data.get('renterEmail')):
-            return jsonify({'success': False, 'error': 'Format d\'email invalide'}), 400
+        # Validation de l'email (optionnel, mais doit être valide si fourni)
+        renter_email = data.get('renterEmail', '').strip()
+        if renter_email and not validate_email(renter_email):
+            return jsonify({'success': False, 'error': f'Format d\'email invalide: {renter_email}'}), 400
         
-        # Validation du téléphone
-        if not validate_phone(data.get('renterPhone')):
-            return jsonify({'success': False, 'error': 'Format de téléphone invalide'}), 400
+        # Validation du téléphone (optionnel, mais doit être valide si fourni)
+        renter_phone = data.get('renterPhone', '').strip()
+        if renter_phone and not validate_phone(renter_phone):
+            return jsonify({'success': False, 'error': f'Format de téléphone invalide: {renter_phone}'}), 400
         
         # Validation des montants
         if not validate_positive_number(data.get('rentalPrice')):
@@ -2105,17 +2751,59 @@ def create_rental():
         ))
         
         rental_id = cursor.lastrowid
+        
+        # Mettre à jour le statut des items dans l'inventaire
+        # Déterminer le statut selon la date de début
+        item_status = 'location_future' if data.get('status') == 'a_venir' else 'en_location'
+        
+        for item_data in data['itemsData']:
+            serial_number = item_data.get('serialNumber')
+            quantity = item_data.get('quantity', 1)  # Quantité louée
+            
+            if serial_number:
+                try:
+                    # Récupérer l'item actuel
+                    cursor.execute('SELECT quantity FROM items WHERE serial_number = ?', (serial_number,))
+                    row = cursor.fetchone()
+                    
+                    if row:
+                        current_quantity = row['quantity'] or 1
+                        remaining_quantity = max(0, current_quantity - quantity)
+                        
+                        # Mettre à jour l'item
+                        cursor.execute('''
+                            UPDATE items 
+                            SET status = ?,
+                                quantity = ?,
+                                rental_end_date = ?,
+                                current_rental_id = ?,
+                                last_updated = ?
+                            WHERE serial_number = ?
+                        ''', (
+                            item_status if remaining_quantity == 0 else 'en_stock',  # Si tout est loué, changer le statut
+                            remaining_quantity,
+                            data['endDate'],
+                            rental_id,
+                            datetime.now().isoformat(),
+                            serial_number
+                        ))
+                        
+                        print(f'[RENTAL] Item {serial_number}: {quantity}/{current_quantity} loués, {remaining_quantity} restants, statut: {item_status if remaining_quantity == 0 else "en_stock"}')
+                except Exception as e:
+                    print(f'[RENTAL] Erreur mise à jour item {serial_number}: {e}')
+        
         conn.commit()
         conn.close()
         
-        # Diffuser l'événement
+        # Diffuser les événements
         broadcast_event('rentals_changed', {'action': 'created', 'id': rental_id})
+        broadcast_event('items_changed', {'action': 'updated', 'rental_id': rental_id})
         
         return jsonify({'success': True, 'id': rental_id}), 201
     except Exception as e:
         print(f'[API] ERREUR POST /api/rentals: {str(e)}')
         import traceback
-        traceback.print_exc()
+        safe_traceback()
         return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 @app.route('/api/rentals/<int:rental_id>', methods=['PUT'])
@@ -2123,9 +2811,25 @@ def update_rental(rental_id):
     """Mettre à jour une location"""
     try:
         data = request.get_json()
+        
+        # Validation de l'email (optionnel, mais doit être valide si fourni)
+        renter_email = data.get('renterEmail', '').strip()
+        if renter_email and not validate_email(renter_email):
+            return jsonify({'success': False, 'error': f'Format d\'email invalide: {renter_email}'}), 400
+        
+        # Validation du téléphone (optionnel, mais doit être valide si fourni)
+        renter_phone = data.get('renterPhone', '').strip()
+        if renter_phone and not validate_phone(renter_phone):
+            return jsonify({'success': False, 'error': f'Format de téléphone invalide: {renter_phone}'}), 400
+        
         now = datetime.now().isoformat()
         conn = get_db()
         cursor = conn.cursor()
+        
+        # Récupérer l'ancien statut avant mise à jour
+        cursor.execute('SELECT status, items_data FROM rentals WHERE id = ?', (rental_id,))
+        old_rental = cursor.fetchone()
+        old_status = old_rental['status'] if old_rental else None
         
         cursor.execute('''
             UPDATE rentals
@@ -2136,8 +2840,8 @@ def update_rental(rental_id):
             WHERE id = ?
         ''', (
             data['renterName'],
-            data['renterEmail'],
-            data['renterPhone'],
+            renter_email,
+            renter_phone,
             data.get('renterAddress', ''),
             data['rentalPrice'],
             data['rentalDeposit'],
@@ -2150,25 +2854,114 @@ def update_rental(rental_id):
             rental_id
         ))
         
+        # Si le statut passe à 'termine', libérer les items
+        if old_status and old_status != 'termine' and data['status'] == 'termine':
+            if data.get('itemsData'):
+                for item_data in data['itemsData']:
+                    serial_number = item_data.get('serialNumber')
+                    quantity = item_data.get('quantity', 1)
+                    
+                    if serial_number:
+                        # Récupérer la quantité actuelle
+                        cursor.execute('SELECT quantity FROM items WHERE serial_number = ?', (serial_number,))
+                        item_row = cursor.fetchone()
+                        
+                        if item_row:
+                            current_quantity = item_row['quantity'] or 0
+                            new_quantity = current_quantity + quantity
+                            
+                            # Libérer les quantités
+                            cursor.execute('''
+                                UPDATE items 
+                                SET status = 'en_stock',
+                                    quantity = ?,
+                                    rental_end_date = NULL,
+                                    current_rental_id = NULL,
+                                    last_updated = ?
+                                WHERE serial_number = ?
+                            ''', (
+                                new_quantity,
+                                now,
+                                serial_number
+                            ))
+                            
+                            print(f'[RENTAL UPDATE] Location terminée - Item {serial_number}: {quantity} libérés, nouveau total: {new_quantity}')
+        
+        # Si le statut passe de 'a_venir' à 'en_cours', mettre à jour le statut des items
+        elif old_status == 'a_venir' and data['status'] == 'en_cours':
+            if data.get('itemsData'):
+                for item_data in data['itemsData']:
+                    serial_number = item_data.get('serialNumber')
+                    if serial_number:
+                        cursor.execute('''
+                            UPDATE items 
+                            SET status = 'en_location'
+                            WHERE serial_number = ? AND current_rental_id = ?
+                        ''', (serial_number, rental_id))
+                        print(f'[RENTAL UPDATE] Statut changé: location_future -> en_location pour {serial_number}')
+        
         conn.commit()
         conn.close()
         
-        # Diffuser l'événement
+        # Diffuser les événements
         broadcast_event('rentals_changed', {'action': 'updated', 'id': rental_id})
+        broadcast_event('items_changed', {'action': 'updated', 'rental_id': rental_id})
         
         return jsonify({'success': True}), 200
     except Exception as e:
         print(f'[API] ERREUR PUT /api/rentals/{rental_id}: {str(e)}')
         import traceback
-        traceback.print_exc()
+        safe_traceback()
         return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 @app.route('/api/rentals/<int:rental_id>', methods=['DELETE'])
 def delete_rental(rental_id):
-    """Supprimer une location"""
+    """Supprimer une location et libérer les items"""
     try:
         conn = get_db()
         cursor = conn.cursor()
+        
+        # Récupérer les items de la location avant de la supprimer
+        cursor.execute('SELECT items_data FROM rentals WHERE id = ?', (rental_id,))
+        row = cursor.fetchone()
+        
+        if row and row['items_data']:
+            try:
+                items_data = json.loads(row['items_data'])
+                
+                # Libérer les quantités dans l'inventaire
+                for item_data in items_data:
+                    serial_number = item_data.get('serialNumber')
+                    quantity = item_data.get('quantity', 1)
+                    
+                    if serial_number:
+                        # Récupérer la quantité actuelle
+                        cursor.execute('SELECT quantity FROM items WHERE serial_number = ?', (serial_number,))
+                        item_row = cursor.fetchone()
+                        
+                        if item_row:
+                            current_quantity = item_row['quantity'] or 0
+                            new_quantity = current_quantity + quantity
+                            
+                            # Libérer les quantités et remettre le statut à en_stock
+                            cursor.execute('''
+                                UPDATE items 
+                                SET status = 'en_stock',
+                                    quantity = ?,
+                                    rental_end_date = NULL,
+                                    current_rental_id = NULL,
+                                    last_updated = ?
+                                WHERE serial_number = ?
+                            ''', (
+                                new_quantity,
+                                datetime.now().isoformat(),
+                                serial_number
+                            ))
+                            
+                            print(f'[RENTAL DELETE] Item {serial_number}: {quantity} libérés, nouveau total: {new_quantity}')
+            except Exception as e:
+                print(f'[RENTAL DELETE] Erreur libération items: {e}')
+        
         cursor.execute('DELETE FROM rentals WHERE id = ?', (rental_id,))
         conn.commit()
         conn.close()
@@ -2180,16 +2973,198 @@ def delete_rental(rental_id):
     except Exception as e:
         print(f'[API] ERREUR DELETE /api/rentals/{rental_id}: {str(e)}')
         import traceback
-        traceback.print_exc()
+        safe_traceback()
         return jsonify({'success': False, 'error': sanitize_error(e)}), 500
+
+def generate_rental_caution_pdf(rental):
+    """Générer un PDF de caution à partir des données location avec fpdf."""
+    # Utiliser fpdf directement (basé sur pdf.py)
+    if FPDF_AVAILABLE:
+        return generate_rental_caution_from_template(rental, None)
+    
+    # Sinon, fallback vers la génération basique avec reportlab
+    if not PDF_AVAILABLE:
+        return None
+    
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=2*cm, leftMargin=2*cm, topMargin=2*cm, bottomMargin=2*cm)
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(name='CustomTitle', parent=styles['Heading1'], fontSize=16, spaceAfter=12)
+    heading_style = ParagraphStyle(name='CustomHeading', parent=styles['Heading2'], fontSize=12, spaceAfter=6)
+    normal_style = styles['Normal']
+    elements = []
+    
+    def format_date(date_str):
+        if not date_str:
+            return ''
+        try:
+            date_obj = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            return date_obj.strftime('%d/%m/%Y')
+        except:
+            return date_str
+    
+    renter_name = rental.get('renter_name') or ''
+    items_data = []
+    try:
+        items_data = json.loads(rental['items_data']) if rental.get('items_data') else []
+    except:
+        pass
+    items_list_str = ', '.join([
+        f"{item.get('name', 'Item')} ({item.get('brand', '')} {item.get('model', '')})"
+        for item in items_data
+    ]) if items_data else '—'
+    
+    elements.append(Paragraph('Modèle pour caution Location', title_style))
+    elements.append(Spacer(1, 12))
+    
+    elements.append(Paragraph('Informations du locataire', heading_style))
+    locataire_data = [
+        ['Nom complet :', renter_name],
+        ['Adresse :', (rental.get('renter_address') or '—')],
+        ['Email :', (rental.get('renter_email') or '—')],
+        ['Téléphone :', (rental.get('renter_phone') or '—')],
+    ]
+    t1 = Table(locataire_data, colWidths=[4*cm, 12*cm])
+    t1.setStyle(TableStyle([('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'), ('FONTSIZE', (0, 0), (-1, -1), 10)]))
+    elements.append(t1)
+    elements.append(Spacer(1, 14))
+    
+    elements.append(Paragraph('Période de location', heading_style))
+    periode_data = [
+        ['Date de début :', format_date(rental.get('start_date'))],
+        ['Date de fin :', format_date(rental.get('end_date'))],
+        ['Durée :', f"{rental.get('rental_duration') or 0} jour(s)"],
+    ]
+    t2 = Table(periode_data, colWidths=[4*cm, 12*cm])
+    t2.setStyle(TableStyle([('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'), ('FONTSIZE', (0, 0), (-1, -1), 10)]))
+    elements.append(t2)
+    elements.append(Spacer(1, 14))
+    
+    elements.append(Paragraph('Montants', heading_style))
+    montant_caution = rental.get('rental_deposit') or 0
+    montant_location = rental.get('rental_price') or 0
+    montants_data = [
+        ['Montant location :', f"{montant_location:.2f} €"],
+        ['Caution :', f"{montant_caution:.2f} €"],
+    ]
+    t3 = Table(montants_data, colWidths=[4*cm, 12*cm])
+    t3.setStyle(TableStyle([('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'), ('FONTSIZE', (0, 0), (-1, -1), 10)]))
+    elements.append(t3)
+    elements.append(Spacer(1, 14))
+    
+    elements.append(Paragraph('Matériel loué', heading_style))
+    elements.append(Paragraph(items_list_str, normal_style))
+    elements.append(Spacer(1, 14))
+    
+    elements.append(Paragraph(f"Document généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')}", ParagraphStyle(name='Small', parent=normal_style, fontSize=8, textColor=colors.gray)))
+    
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer
+
+def generate_rental_caution_from_template(rental, template_path):
+    """Générer un PDF avec fpdf (basé sur pdf.py) avec les infos du loueur."""
+    try:
+        if not FPDF_AVAILABLE:
+            print('[PDF] fpdf non disponible, impossible de générer le PDF')
+            return None
+        
+        def format_date(date_str):
+            if not date_str:
+                return ''
+            try:
+                date_obj = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                return date_obj.strftime('%d/%m/%Y')
+            except:
+                return date_str
+        
+        # Préparer les données
+        date_doc = datetime.now().strftime('%d/%m/%Y')
+        nom_client = rental.get('renter_name') or 'Client'
+        
+        # Récupérer les items pour le matériel
+        items_data = []
+        try:
+            items_data = json.loads(rental['items_data']) if rental.get('items_data') else []
+        except:
+            pass
+        
+        # Construire la liste du matériel
+        if items_data:
+            materiel = ', '.join([
+                f"{item.get('name', '')} {item.get('brand', '')} {item.get('model', '')}".strip()
+                for item in items_data
+            ])
+        else:
+            materiel = 'matériel'
+        
+        date_retrait = format_date(rental.get('end_date'))
+        montant_caution = f"{rental.get('rental_deposit') or 0:.2f} CHF"
+        
+        # --- Création du PDF avec fpdf (comme dans pdf.py) ---
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.set_font("Arial", size=9)
+        
+        # --- Contenu du document (template exact de pdf.py) ---
+        texte = f"""
+Date : {date_doc}
+
+Encaissement de la Caution pour {materiel}
+
+Entre GlobalVision Communication Sàrl et {nom_client}
+
+
+Cher client,
+
+Nous vous remercions d'avoir choisi GlobalVision pour la location de {materiel}.
+Afin d'assurer la sécurité du matériel, nous vous demandons de fournir une caution
+lors du retrait du kit, qui aura lieu le {date_retrait}.
+
+Détails de la Caution :
+
+Montant : {montant_caution}
+Mode de Paiement : Espèces ou paiement par carte.
+Si paiement par carte, un frais de 3% est appliqué lors du remboursement de la caution.
+
+Conditions de Remboursement :
+La caution sera intégralement restituée lors du dépôt du matériel à condition que
+celui-ci soit rendu dans le même état que lors de son retrait. Une vérification sera
+effectuée pour s'assurer que tous les éléments du kit sont présents et en bon état
+de fonctionnement.
+
+Nous vous remercions de votre confiance et de votre coopération.
+
+Cordialement,
+
+Global Vision Communication SARL
+
+Date et Signature des deux parties :
+"""
+        
+        pdf.multi_cell(0, 8, texte)
+        
+        # Sauvegarder dans un buffer au lieu d'un fichier
+        buffer = BytesIO()
+        pdf_output = pdf.output(dest='S').encode('latin-1')  # fpdf retourne une string
+        buffer.write(pdf_output)
+        buffer.seek(0)
+        
+        print('[PDF] PDF généré avec succès avec fpdf')
+        return buffer
+        
+    except Exception as e:
+        print(f'[PDF] Erreur lors de la génération avec fpdf: {str(e)}')
+        import traceback
+        safe_traceback()
+        return None
+
 
 @app.route('/api/rentals/<int:rental_id>/caution-doc', methods=['GET'])
 def get_rental_caution_doc(rental_id):
-    """Générer et télécharger le document de caution pour une location"""
+    """Générer et télécharger le document de caution (PDF par défaut, DOCX si format=docx)"""
     try:
-        if not DOCX_AVAILABLE:
-            return jsonify({'success': False, 'error': 'python-docx non disponible'}), 500
-        
         # Récupérer la location
         conn = get_db()
         cursor = conn.cursor()
@@ -2200,10 +3175,35 @@ def get_rental_caution_doc(rental_id):
         if not rental:
             return jsonify({'success': False, 'error': 'Location non trouvée'}), 404
         
-        # Charger le modèle DOCX
-        template_path = os.path.join('.', 'Modèle pour caution Location.docx')
-        if not os.path.exists(template_path):
-            return jsonify({'success': False, 'error': 'Modèle DOCX non trouvé'}), 404
+        rental = dict(rental)
+        fmt = request.args.get('format', 'pdf').lower()
+        
+        if fmt == 'docx':
+            if not DOCX_AVAILABLE:
+                return jsonify({'success': False, 'error': 'python-docx non disponible'}), 500
+            # Charger le modèle DOCX
+            template_path = os.path.join('.', 'Modèle pour caution Location.docx')
+        else:
+            # Par défaut : PDF (modèle caution avec infos locataire)
+            if PDF_AVAILABLE:
+                pdf_buffer = generate_rental_caution_pdf(rental)
+                if pdf_buffer:
+                    safe_name = re.sub(r'[^\w\s-]', '', (rental.get('renter_name') or 'inconnu')).strip().replace(' ', '_')
+                    filename = f'caution_location_{rental_id}_{safe_name}.pdf'
+                    return send_file(
+                        pdf_buffer,
+                        mimetype='application/pdf',
+                        as_attachment=True,
+                        download_name=filename
+                    )
+            if not DOCX_AVAILABLE:
+                return jsonify({'success': False, 'error': 'reportlab ou python-docx requis pour générer le document'}), 500
+            template_path = os.path.join('.', 'Modèle pour caution Location.docx')
+        
+        if fmt == 'docx' or not PDF_AVAILABLE:
+            template_path = os.path.join('.', 'Modèle pour caution Location.docx')
+            if not os.path.exists(template_path):
+                return jsonify({'success': False, 'error': 'Modèle DOCX non trouvé'}), 404
         
         doc = Document(template_path)
         
@@ -2385,7 +3385,7 @@ def get_rental_caution_doc(rental_id):
     except Exception as e:
         print(f'[API] ERREUR GET /api/rentals/{rental_id}/caution-doc: {str(e)}')
         import traceback
-        traceback.print_exc()
+        safe_traceback()
         return jsonify({'success': False, 'error': sanitize_error(e)}), 500
 
 @app.route('/api/rental-statuses', methods=['GET'])
@@ -2483,8 +3483,243 @@ def ocr_image():
     except Exception as e:
         print(f'[OCR] Erreur: {str(e)}')
         import traceback
-        traceback.print_exc()
+        safe_traceback()
         return jsonify({'success': False, 'error': sanitize_error(e)}), 500
+
+@app.route('/api/analyze-label-ai', methods=['POST'])
+def analyze_label_ai():
+    """Analyser une étiquette avec IA (OpenRouter) pour extraction intelligente des champs"""
+    try:
+        data = request.get_json()
+        image_data = data.get('image')
+        
+        if not image_data:
+            return jsonify({'success': False, 'error': 'Image manquante'}), 400
+        
+        _log('INFO', '[AI-Label] Début analyse image par IA...')
+        
+        # Clé API OpenRouter (à mettre en variable d'environnement en production)
+        openrouter_api_key = os.environ.get('OPENROUTER_API_KEY', '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')
+        
+        if not openrouter_api_key or openrouter_api_key == 'YOUR_API_KEY_HERE':
+            return jsonify({
+                'success': False,
+                'error': 'Clé API OpenRouter non configurée'
+            }), 500
+        
+        # Récupérer les champs personnalisés
+        custom_fields = []
+        custom_fields_prompt = ""
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute('SELECT name, field_key, field_type, options FROM custom_fields ORDER BY display_order ASC')
+            rows = cursor.fetchall()
+            conn.close()
+            
+            if rows:
+                custom_fields = [{
+                    'name': row['name'],
+                    'fieldKey': row['field_key'],
+                    'fieldType': row['field_type'],
+                    'options': json.loads(row['options']) if row['options'] else None
+                } for row in rows]
+                
+                # Ajouter les champs personnalisés au prompt
+                custom_fields_json = ',\n  '.join([f'"{field["fieldKey"]}": "valeur du champ {field["name"]}"' for field in custom_fields])
+                if custom_fields_json:
+                    custom_fields_prompt = f",\n  {custom_fields_json}"
+                
+                _log('INFO', f'[AI-Label] {len(custom_fields)} champs personnalisés trouvés')
+        except Exception as e:
+            _log('WARN', f'[AI-Label] Impossible de récupérer les champs personnalisés: {str(e)}')
+        
+        # Préparer le prompt pour l'IA
+        prompt = f"""Analyse cette image d'étiquette de produit et extrais les informations suivantes au format JSON strict.
+
+Retourne UNIQUEMENT un objet JSON valide avec ces champs (mets null si information absente):
+{{
+  "name": "nom du produit",
+  "serialNumber": "numéro de série",
+  "brand": "marque",
+  "model": "modèle/référence",
+  "barcode": "code-barres/UPC/EAN (chiffres uniquement)",
+  "description": "description courte du produit",
+  "category": "catégorie (materiel, accessoire, consommable, piece_detachee, ou autre)",
+  "quantity": 1{custom_fields_prompt}
+}}
+
+IMPORTANT:
+- Retourne UNIQUEMENT le JSON, sans texte avant ou après
+- Si une information n'est pas visible, mets null
+- Pour le code-barres, extrais seulement les chiffres
+- Pour la catégorie, choisis parmi: materiel, accessoire, consommable, piece_detachee, autre
+- Pour les champs personnalisés, devine la valeur la plus pertinente basée sur l'image
+- Sois précis et concis"""
+
+        # Préparer la requête pour OpenRouter
+        headers = {
+            'Authorization': f'Bearer {openrouter_api_key}',
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'http://localhost:3000',  # Requis par OpenRouter
+            'X-Title': 'Code Bar CRM'  # Optionnel
+        }
+        
+        # Utiliser un modèle de vision léger et rapide
+        # Modèles disponibles avec vision sur OpenRouter:
+        # - openai/gpt-4o-mini (rapide, économique, fiable)
+        # - anthropic/claude-3-haiku (très bon pour extraction)
+        # - openai/gpt-4o (le plus puissant)
+        payload = {
+            'model': 'openai/gpt-4o-mini',  # Modèle OpenAI léger et fiable
+            'messages': [
+                {
+                    'role': 'user',
+                    'content': [
+                        {
+                            'type': 'text',
+                            'text': prompt
+                        },
+                        {
+                            'type': 'image_url',
+                            'image_url': {
+                                'url': image_data if image_data.startswith('data:') else f'data:image/jpeg;base64,{image_data}'
+                            }
+                        }
+                    ]
+                }
+            ],
+            'temperature': 0.1,  # Bas pour plus de précision
+            'max_tokens': 500
+        }
+        
+        _log('INFO', f'[AI-Label] Envoi requête à OpenRouter (modèle: {payload["model"]})...')
+        
+        # Appeler l'API OpenRouter
+        response = requests.post(
+            'https://openrouter.ai/api/v1/chat/completions',
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            _log('ERREUR', f'[AI-Label] Erreur API OpenRouter: {response.status_code} - {response.text}')
+            return jsonify({
+                'success': False,
+                'error': f'Erreur API OpenRouter: {response.status_code}'
+            }), 500
+        
+        result = response.json()
+        _log('INFO', f'[AI-Label] Réponse reçue de OpenRouter')
+        
+        # Extraire le contenu de la réponse
+        if 'choices' not in result or len(result['choices']) == 0:
+            _log('ERREUR', '[AI-Label] Réponse OpenRouter invalide')
+            return jsonify({
+                'success': False,
+                'error': 'Réponse API invalide'
+            }), 500
+        
+        content = result['choices'][0]['message']['content']
+        _log('INFO', f'[AI-Label] Contenu brut: {content[:200]}...')
+        
+        # Parser le JSON de la réponse
+        # Parfois l'IA ajoute des balises markdown, on les enlève
+        content = content.strip()
+        if content.startswith('```json'):
+            content = content[7:]
+        if content.startswith('```'):
+            content = content[3:]
+        if content.endswith('```'):
+            content = content[:-3]
+        content = content.strip()
+        
+        try:
+            parsed_data = json.loads(content)
+            _log('INFO', f'[AI-Label] Données extraites: {json.dumps(parsed_data, ensure_ascii=False)}')
+            
+            # Si pas de code-barres mais un nom de produit, chercher l'UPC en ligne
+            if not parsed_data.get('barcode') and parsed_data.get('name'):
+                _log('INFO', f'[AI-Label] Pas de code-barres trouvé, recherche UPC en ligne pour: {parsed_data["name"]}')
+                try:
+                    # Construire une requête de recherche
+                    search_query = parsed_data['name']
+                    if parsed_data.get('brand'):
+                        search_query = f"{parsed_data['brand']} {search_query}"
+                    if parsed_data.get('model'):
+                        search_query = f"{search_query} {parsed_data['model']}"
+                    
+                    _log('INFO', f'[AI-Label] Recherche UPC pour: {search_query}')
+                    
+                    # Essayer UPC Item DB
+                    upc_api_key = os.environ.get('UPC_ITEM_DB_KEY', 'user_key$73gvintage73')
+                    upc_url = f'https://api.upcitemdb.com/prod/trial/search?s={urllib.parse.quote(search_query)}'
+                    upc_headers = {
+                        'user_key': upc_api_key,
+                        'key_type': '3scale'
+                    }
+                    
+                    upc_response = requests.get(upc_url, headers=upc_headers, timeout=5)
+                    
+                    if upc_response.status_code == 200:
+                        upc_data = upc_response.json()
+                        if upc_data.get('items') and len(upc_data['items']) > 0:
+                            first_item = upc_data['items'][0]
+                            found_upc = first_item.get('upc') or first_item.get('ean')
+                            if found_upc:
+                                parsed_data['barcode'] = found_upc
+                                _log('INFO', f'[AI-Label] UPC trouvé: {found_upc}')
+                            else:
+                                _log('INFO', '[AI-Label] Aucun UPC dans le premier résultat')
+                        else:
+                            _log('INFO', '[AI-Label] Aucun résultat UPC trouvé')
+                    else:
+                        _log('WARN', f'[AI-Label] Erreur recherche UPC: {upc_response.status_code}')
+                    
+                except Exception as search_error:
+                    _log('WARN', f'[AI-Label] Erreur lors de la recherche UPC: {str(search_error)}')
+                    # Continue sans UPC, ce n'est pas bloquant
+            
+            return jsonify({
+                'success': True,
+                'parsed': parsed_data,
+                'rawResponse': content,
+                'model': payload['model'],
+                'customFields': custom_fields
+            }), 200
+            
+        except json.JSONDecodeError as e:
+            _log('ERREUR', f'[AI-Label] Erreur parsing JSON: {str(e)}')
+            _log('ERREUR', f'[AI-Label] Contenu reçu: {content}')
+            return jsonify({
+                'success': False,
+                'error': 'Réponse IA non parsable',
+                'rawResponse': content
+            }), 500
+        
+    except requests.exceptions.Timeout:
+        _log('ERREUR', '[AI-Label] Timeout API OpenRouter')
+        return jsonify({
+            'success': False,
+            'error': 'Timeout - L\'API a mis trop de temps à répondre'
+        }), 500
+        
+    except requests.exceptions.RequestException as e:
+        _log('ERREUR', f'[AI-Label] Erreur requête: {str(e)}')
+        return jsonify({
+            'success': False,
+            'error': f'Erreur de connexion: {sanitize_error(e)}'
+        }), 500
+        
+    except Exception as e:
+        _log('ERREUR', f'[AI-Label] Erreur inattendue: {str(e)}', e)
+        import traceback
+        safe_traceback()
+        return jsonify({
+            'success': False,
+            'error': sanitize_error(e)
+        }), 500
 
 def parse_ocr_text(text):
     """Parser le texte OCR pour extraire les informations utiles"""
@@ -2559,6 +3794,409 @@ def ocr_status():
         'tesseract_path': pytesseract.pytesseract.tesseract_cmd if OCR_AVAILABLE else None
     }), 200
 
+# ==================== COMMANDE VOCALE (IA) ====================
+
+# Initialiser Whisper local (faster-whisper)
+WHISPER_AVAILABLE = False
+whisper_model = None
+
+try:
+    from faster_whisper import WhisperModel
+    # Utiliser le modèle "base" pour un bon équilibre vitesse/qualité
+    # Options: tiny, base, small, medium, large-v3
+    print('[WHISPER] Chargement du modèle Whisper local (base)...')
+    whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
+    WHISPER_AVAILABLE = True
+    print('[WHISPER] Modèle Whisper local chargé avec succès')
+except ImportError:
+    print('[WHISPER] faster-whisper non installé - pip install faster-whisper')
+except Exception as e:
+    print(f'[WHISPER] Erreur chargement modèle: {e}')
+
+# Vérifier si OpenAI est disponible (pour l'analyse GPT)
+
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+    # Initialiser le client OpenAI (la clé sera lue depuis .env ou variable d'environnement)
+    openai_api_key = os.environ.get('OPENAI_API_KEY')
+    if openai_api_key:
+        openai_client = OpenAI(api_key=openai_api_key)
+        print('[OPENAI] Client OpenAI initialisé (pour analyse GPT)')
+    else:
+        OPENAI_AVAILABLE = False
+        print('[OPENAI] OPENAI_API_KEY non définie - analyse GPT désactivée')
+except ImportError:
+    OPENAI_AVAILABLE = False
+    print('[OPENAI] openai non installé - pip install openai')
+
+@app.route('/api/voice/transcribe', methods=['POST'])
+def transcribe_audio():
+    """Transcrire un audio en texte avec Whisper local (faster-whisper)"""
+    if not WHISPER_AVAILABLE:
+        return jsonify({
+            'success': False,
+            'error': 'Whisper non disponible. Installez faster-whisper: pip install faster-whisper'
+        }), 503
+    
+    try:
+        # Récupérer le fichier audio
+        if 'audio' not in request.files:
+            return jsonify({'success': False, 'error': 'Aucun fichier audio'}), 400
+        
+        audio_file = request.files['audio']
+        if audio_file.filename == '':
+            return jsonify({'success': False, 'error': 'Fichier audio vide'}), 400
+        
+        print(f'[WHISPER] Transcription audio: {audio_file.filename}')
+        
+        # Sauvegarder temporairement le fichier
+        temp_path = os.path.join('data', f'temp_audio_{datetime.now().timestamp()}.webm')
+        os.makedirs('data', exist_ok=True)
+        audio_file.save(temp_path)
+        
+        try:
+            # Transcrire avec Whisper local
+            segments, info = whisper_model.transcribe(
+                temp_path,
+                language="fr",
+                beam_size=5
+            )
+            
+            # Combiner tous les segments
+            text = " ".join([segment.text for segment in segments]).strip()
+            
+            if not text:
+                return jsonify({
+                    'success': False,
+                    'error': 'Aucun texte détecté dans l\'audio'
+                }), 400
+            
+            print(f'[WHISPER] Transcription réussie: {text[:100]}...')
+            print(f'[WHISPER] Langue détectée: {info.language}, probabilité: {info.language_probability:.2f}')
+            
+            return jsonify({
+                'success': True,
+                'text': text,
+                'confidence': info.language_probability,
+                'language': info.language
+            }), 200
+            
+        finally:
+            # Supprimer le fichier temporaire
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+    
+    except Exception as e:
+        print(f'[WHISPER] Erreur transcription: {str(e)}')
+        import traceback
+        safe_traceback()
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
+
+@app.route('/api/voice/status', methods=['GET'])
+def voice_status():
+    """Vérifier le statut des services vocaux (Whisper + OpenAI)"""
+    return jsonify({
+        'whisper': {
+            'available': WHISPER_AVAILABLE,
+            'model': 'base (local)' if WHISPER_AVAILABLE else None
+        },
+        'openai': {
+            'available': OPENAI_AVAILABLE,
+            'note': 'Requis pour l\'analyse GPT du texte'
+        }
+    }), 200
+
+@app.route('/api/voice/analyze', methods=['POST'])
+def analyze_voice_command():
+    """Analyser un texte avec GPT pour extraire les informations de location"""
+    if not OPENAI_AVAILABLE:
+        return jsonify({
+            'success': False,
+            'error': 'OpenAI non disponible'
+        }), 503
+    
+    try:
+        data = request.get_json()
+        text = data.get('text', '')
+        
+        if not text:
+            return jsonify({'success': False, 'error': 'Texte vide'}), 400
+        
+        print(f'[VOICE] Analyse du texte: {text[:100]}...')
+        
+        # Créer un prompt pour GPT
+        prompt = f"""Tu es un assistant qui analyse des commandes vocales pour créer des locations d'équipement.
+
+Analyse le texte suivant et extrait les informations pour créer une location:
+
+Texte: "{text}"
+
+Tu dois extraire et retourner un JSON avec les champs suivants:
+- items: liste d'objets avec itemId et quantity
+- renterName: nom du locataire (si mentionné)
+- startDate: date de début au format YYYY-MM-DD
+- endDate: date de fin au format YYYY-MM-DD
+- rentalPrice: prix de location (si mentionné, sinon 0)
+- rentalDeposit: caution (si mentionnée, sinon 0)
+- notes: notes additionnelles
+
+IMPORTANT pour les items:
+- Les identifiants d'items peuvent être: "c15", "C15", "15", "07", "A53", "AST000210", etc.
+- Mets l'identifiant EXACTEMENT comme il est dit dans le champ "itemId"
+- Exemples: si l'utilisateur dit "c15" -> itemId: "c15", si "07" -> itemId: "07"
+- Si des quantités sont mentionnées, utilise-les, sinon mets 1
+- Si le nom d'un item est mentionné au lieu d'un ID, mets-le dans le champ "name"
+
+Pour les dates:
+- Si seul le jour est mentionné, utilise le mois et l'année actuels
+- "aujourd'hui" = date du jour, "demain" = jour +1, "après-demain" = jour +2
+
+Retourne UNIQUEMENT le JSON valide, sans texte avant ou après.
+
+Date actuelle: {datetime.now().strftime('%Y-%m-%d')}
+"""
+        
+        # Appeler GPT (gpt-3.5-turbo = 20x moins cher que gpt-4)
+        response = openai_client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "Tu es un assistant qui extrait des informations structurées depuis du texte."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3  # Basse température pour plus de précision
+        )
+        
+        # Extraire la réponse
+        result_text = response.choices[0].message.content.strip()
+        print(f'[VOICE] Réponse GPT: {result_text}')
+        
+        # Parser le JSON
+        # Nettoyer si GPT a ajouté des backticks markdown
+        if result_text.startswith('```'):
+            result_text = result_text.split('```')[1]
+            if result_text.startswith('json'):
+                result_text = result_text[4:]
+            result_text = result_text.strip()
+        
+        result = json.loads(result_text)
+        
+        # Valider et nettoyer les données
+        if not isinstance(result.get('items'), list) or len(result['items']) == 0:
+            return jsonify({
+                'success': False,
+                'error': 'Aucun item détecté dans la commande vocale'
+            }), 400
+        
+        # S'assurer que chaque item a une quantité et un identifiant
+        for item in result['items']:
+            if 'quantity' not in item:
+                item['quantity'] = 1
+            # Normaliser l'identifiant
+            if 'itemId' not in item and 'serialNumber' in item:
+                item['itemId'] = item['serialNumber']
+            # Log pour debug
+            print(f'[VOICE] Item extrait: {item}')
+        
+        print(f'[VOICE] Analyse réussie: {len(result["items"])} items détectés')
+        
+        return jsonify(result), 200
+    
+    except json.JSONDecodeError as e:
+        print(f'[VOICE] Erreur parsing JSON: {e}')
+        return jsonify({
+            'success': False,
+            'error': 'Impossible de parser la réponse de l\'IA'
+        }), 500
+    except Exception as e:
+        print(f'[VOICE] Erreur analyse: {str(e)}')
+        import traceback
+        safe_traceback()
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
+
+@app.route('/api/voice/create-rental', methods=['POST'])
+def create_rental_from_voice():
+    """Créer une location depuis une analyse IA"""
+    try:
+        data = request.get_json()
+        
+        print(f'[VOICE] Création location depuis IA: {data}')
+        
+        # Récupérer les items depuis la base de données
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        items_data = []
+        missing_items = []
+        
+        for item_info in data.get('items', []):
+            serial_number = item_info.get('serialNumber') or item_info.get('itemId')
+            quantity = item_info.get('quantity', 1)
+            
+            if serial_number:
+                # Chercher l'item dans la base (par serial_number, item_id ou hex_id)
+                cursor.execute('''
+                    SELECT serial_number, name, brand, model, item_type, quantity as stock_quantity
+                    FROM items
+                    WHERE serial_number = ? OR item_id = ? OR hex_id = ?
+                ''', (serial_number, serial_number, serial_number.upper()))
+                
+                row = cursor.fetchone()
+                
+                if row:
+                    items_data.append({
+                        'serialNumber': row['serial_number'],
+                        'name': row['name'],
+                        'brand': row['brand'],
+                        'model': row['model'],
+                        'itemType': row['item_type'],
+                        'quantity': quantity
+                    })
+                else:
+                    missing_items.append(serial_number)
+            else:
+                # Item sans ID, on utilise juste le nom
+                items_data.append({
+                    'serialNumber': f'TEMP-{datetime.now().timestamp()}',
+                    'name': item_info.get('name', 'Item sans nom'),
+                    'quantity': quantity
+                })
+        
+        if len(items_data) == 0:
+            return jsonify({
+                'success': False,
+                'error': f'Aucun item trouvé. Items manquants: {", ".join(missing_items)}'
+            }), 404
+        
+        # Valider et formater les dates (valeurs par défaut si manquantes)
+        today = datetime.now()
+        default_start = today.strftime('%Y-%m-%d')
+        default_end = (today + timedelta(days=7)).strftime('%Y-%m-%d')
+        
+        start_date_str = data.get('startDate') or default_start
+        end_date_str = data.get('endDate') or default_end
+        
+        # Nettoyer les dates (enlever les heures si présentes)
+        if start_date_str and 'T' in start_date_str:
+            start_date_str = start_date_str.split('T')[0]
+        if end_date_str and 'T' in end_date_str:
+            end_date_str = end_date_str.split('T')[0]
+        
+        print(f'[VOICE] Dates: {start_date_str} -> {end_date_str}')
+        
+        # Créer la location
+        rental_data = {
+            'renterName': data.get('renterName') or 'Locataire (commande vocale)',
+            'renterEmail': data.get('renterEmail') or '',
+            'renterPhone': data.get('renterPhone') or '',
+            'renterAddress': data.get('renterAddress') or '',
+            'rentalPrice': float(data.get('rentalPrice') or 0),
+            'rentalDeposit': float(data.get('rentalDeposit') or 0),
+            'startDate': start_date_str,
+            'endDate': end_date_str,
+            'itemsData': items_data,
+            'notes': data.get('notes') or 'Créé depuis commande vocale'
+        }
+        
+        # Calculer la durée
+        try:
+            start = datetime.strptime(rental_data['startDate'], '%Y-%m-%d')
+            end = datetime.strptime(rental_data['endDate'], '%Y-%m-%d')
+            rental_data['rentalDuration'] = max(1, (end - start).days)
+        except Exception as date_err:
+            print(f'[VOICE] Erreur parsing dates: {date_err}')
+            rental_data['rentalDuration'] = 7
+        
+        # Déterminer le statut
+        try:
+            start_date = datetime.strptime(rental_data['startDate'], '%Y-%m-%d')
+            rental_data['status'] = 'a_venir' if start_date > today else 'en_cours'
+        except:
+            rental_data['status'] = 'en_cours'
+        
+        # Insérer dans la base
+        now = datetime.now().isoformat()
+        cursor.execute('''
+            INSERT INTO rentals (
+                renter_name, renter_email, renter_phone, renter_address,
+                rental_price, rental_deposit, rental_duration,
+                start_date, end_date, status, items_data, notes,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            rental_data['renterName'],
+            rental_data['renterEmail'],
+            rental_data['renterPhone'],
+            rental_data['renterAddress'],
+            rental_data['rentalPrice'],
+            rental_data['rentalDeposit'],
+            rental_data['rentalDuration'],
+            rental_data['startDate'],
+            rental_data['endDate'],
+            rental_data['status'],
+            json.dumps(rental_data['itemsData']),
+            rental_data['notes'],
+            now,
+            now
+        ))
+        
+        rental_id = cursor.lastrowid
+        
+        # Mettre à jour l'inventaire
+        item_status = 'location_future' if rental_data['status'] == 'a_venir' else 'en_location'
+        
+        for item_data in rental_data['itemsData']:
+            serial_number = item_data.get('serialNumber')
+            quantity = item_data.get('quantity', 1)
+            
+            if serial_number and not serial_number.startswith('TEMP-'):
+                cursor.execute('SELECT quantity FROM items WHERE serial_number = ?', (serial_number,))
+                row = cursor.fetchone()
+                
+                if row:
+                    current_quantity = row['quantity'] or 1
+                    remaining_quantity = max(0, current_quantity - quantity)
+                    
+                    cursor.execute('''
+                        UPDATE items 
+                        SET status = ?,
+                            quantity = ?,
+                            rental_end_date = ?,
+                            current_rental_id = ?,
+                            last_updated = ?
+                        WHERE serial_number = ?
+                    ''', (
+                        item_status if remaining_quantity == 0 else 'en_stock',
+                        remaining_quantity,
+                        rental_data['endDate'],
+                        rental_id,
+                        now,
+                        serial_number
+                    ))
+        
+        conn.commit()
+        conn.close()
+        
+        # Diffuser les événements
+        broadcast_event('rentals_changed', {'action': 'created', 'id': rental_id, 'source': 'voice'})
+        broadcast_event('items_changed', {'action': 'updated', 'rental_id': rental_id})
+        
+        print(f'[VOICE] Location créée: #{rental_id}')
+        
+        return jsonify({
+            'success': True,
+            'id': rental_id,
+            'itemsFound': len(items_data),
+            'itemsMissing': missing_items
+        }), 201
+    
+    except Exception as e:
+        print(f'[VOICE] Erreur création location: {str(e)}')
+        import traceback
+        safe_traceback()
+        return jsonify({'success': False, 'error': sanitize_error(e)}), 500
+
 # ==================== HEALTH CHECK ====================
 
 @app.route('/api/health', methods=['GET'])
@@ -2573,21 +4211,51 @@ def health_check():
         'docx': 'available' if DOCX_AVAILABLE else 'unavailable'
     }), 200
 
+# ==================== CATCH-ALL FRONTEND (doit être après toutes les routes API) ====================
+
+@app.route('/<path:path>')
+def serve_frontend_pages(path):
+    """Servir les pages du frontend (catch-all)"""
+    if not FRONTEND_AVAILABLE:
+        return '', 404
+    
+    # Ne pas intercepter les routes API
+    if path.startswith('api/'):
+        return '', 404
+    
+    # Essayer de servir le fichier directement
+    file_path = os.path.join(FRONTEND_BUILD_DIR, path)
+    if os.path.exists(file_path) and os.path.isfile(file_path):
+        directory = os.path.dirname(file_path)
+        filename = os.path.basename(file_path)
+        return send_from_directory(directory, filename)
+    
+    # Essayer avec .html
+    html_path = os.path.join(FRONTEND_BUILD_DIR, f'{path}.html')
+    if os.path.exists(html_path):
+        directory = os.path.dirname(html_path)
+        filename = os.path.basename(html_path)
+        return send_from_directory(directory, filename)
+    
+    # Essayer comme dossier avec index.html
+    index_path = os.path.join(FRONTEND_BUILD_DIR, path, 'index.html')
+    if os.path.exists(index_path):
+        return send_from_directory(os.path.join(FRONTEND_BUILD_DIR, path), 'index.html')
+    
+    # Fallback: retourner index.html pour le routing côté client
+    return send_from_directory(FRONTEND_BUILD_DIR, 'index.html')
+
 # ==================== DÉMARRAGE ====================
 
 import subprocess
 import sys
 
-# Configuration du démarrage
-FLASK_DEBUG = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true' and APP_MODE == 'development'
+# Configuration du démarrage (en mode dev : rechargement auto du backend à chaque modification)
+FLASK_DEBUG = os.environ.get('FLASK_DEBUG', 'true' if APP_MODE == 'development' else 'false').lower() == 'true'
 
 def build_frontend():
-    """Construire le frontend Next.js si nécessaire"""
-    frontend_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'horizon-ui-template')
-    
-    if not os.path.exists(frontend_dir):
-        print(f"[ERREUR] Dossier frontend non trouvé: {frontend_dir}")
-        return False
+    """Construire le frontend Next.js si nécessaire (depuis la racine du projet)"""
+    project_root = os.path.dirname(os.path.abspath(__file__))
     
     # Vérifier si le build existe déjà
     if FRONTEND_AVAILABLE:
@@ -2599,31 +4267,31 @@ def build_frontend():
     
     try:
         # Installer les dépendances si nécessaire
-        node_modules = os.path.join(frontend_dir, 'node_modules')
+        node_modules = os.path.join(project_root, 'node_modules')
         if not os.path.exists(node_modules):
-            print("[BUILD] Installation des dépendances (yarn install)...")
+            print("[BUILD] Installation des dépendances (npm install)...")
             result = subprocess.run(
-                'yarn install' if sys.platform == 'win32' else ['yarn', 'install'],
-                cwd=frontend_dir,
+                'npm install' if sys.platform == 'win32' else ['npm', 'install'],
+                cwd=project_root,
                 shell=sys.platform == 'win32',
                 capture_output=True,
                 text=True
             )
             if result.returncode != 0:
-                print(f"[BUILD] Erreur yarn install: {result.stderr}")
+                print(f"[BUILD] Erreur npm install: {result.stderr}")
                 return False
         
         # Build le frontend
-        print("[BUILD] Construction du frontend (yarn build)...")
+        print("[BUILD] Construction du frontend (npm run build)...")
         result = subprocess.run(
-            'yarn build' if sys.platform == 'win32' else ['yarn', 'build'],
-            cwd=frontend_dir,
+            'npm run build' if sys.platform == 'win32' else ['npm', 'run', 'build'],
+            cwd=project_root,
             shell=sys.platform == 'win32',
             capture_output=True,
             text=True
         )
         if result.returncode != 0:
-            print(f"[BUILD] Erreur yarn build: {result.stderr}")
+            print(f"[BUILD] Erreur npm run build: {result.stderr}")
             return False
         
         print("[BUILD] Frontend buildé avec succès!")
@@ -2640,6 +4308,9 @@ if __name__ == '__main__':
     
     # Initialiser la base de données
     init_db()
+    
+    # Migrer les hex_id vers le nouveau format 3 caractères
+    migrate_hex_ids()
     
     # Vérifier/construire le frontend si demandé
     auto_build = os.environ.get('AUTO_BUILD', 'false').lower() == 'true'
@@ -2658,10 +4329,9 @@ if __name__ == '__main__':
     print("=" * 60)
     
     if not FRONTEND_AVAILABLE:
-        print("\n[ATTENTION] Pour activer le frontend, executez :")
-        print("    cd horizon-ui-template")
-        print("    yarn install")
-        print("    yarn build")
+        print("\n[ATTENTION] Pour activer le frontend, executez (depuis la racine du projet) :")
+        print("    npm install")
+        print("    npm run build")
         print("    Puis relancez: python server.py")
         print("\n    Ou lancez avec AUTO_BUILD=true :")
         print("    AUTO_BUILD=true python server.py")
@@ -2670,9 +4340,11 @@ if __name__ == '__main__':
     print("=" * 60 + "\n")
     
     # Démarrer Flask (API + Frontend sur le même port)
+    # debug=True en dev : rechargement auto quand vous modifiez server.py ou les fichiers Python
     app.run(
         host='0.0.0.0',
         port=SERVER_PORT,
         debug=FLASK_DEBUG,
+        use_reloader=FLASK_DEBUG,  # Redémarrage auto du serveur à chaque modification du code Python
         threaded=True  # Permettre plusieurs connexions simultanées (SSE)
     )

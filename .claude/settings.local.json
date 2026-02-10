@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx next build)",
+      "Bash(taskkill:*)",
+      "Bash(curl:*)",
+      "Bash(python:*)",
+      "Bash(dir:*)",
+      "Bash(netstat:*)",
+      "Bash(npx tsc:*)"
+    ]
+  }
+}

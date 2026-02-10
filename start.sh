@@ -1,4 +1,5 @@
 #!/bin/bash
+cd "$(dirname "$0")"
 
 echo "============================================================"
 echo "  CODE BAR CRM - Démarrage"
@@ -16,8 +17,8 @@ else
     PYTHON_CMD="python3"
 fi
 
-# Vérifier si le frontend est buildé
-if [ ! -f "horizon-ui-template/out/index.html" ]; then
+# Vérifier si le frontend est buildé (tout à la racine)
+if [ ! -f "out/index.html" ]; then
     echo "[INFO] Le frontend n'est pas encore buildé."
     echo ""
     
@@ -28,19 +29,17 @@ if [ ! -f "horizon-ui-template/out/index.html" ]; then
     fi
     
     echo "[BUILD] Construction du frontend..."
-    cd horizon-ui-template
     
     # Installer les dépendances si nécessaire
     if [ ! -d "node_modules" ]; then
         echo "[BUILD] Installation des dépendances..."
-        yarn install || npm install
+        npm install
     fi
     
     echo "[BUILD] Build du frontend (cela peut prendre quelques minutes)..."
-    yarn build || npm run build
-    cd ..
+    npm run build
     
-    if [ -f "horizon-ui-template/out/index.html" ]; then
+    if [ -f "out/index.html" ]; then
         echo "[BUILD] Frontend buildé avec succès!"
     else
         echo "[ERREUR] Échec du build."

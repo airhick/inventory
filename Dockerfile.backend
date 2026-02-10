@@ -1,0 +1,38 @@
+# Backend Python Flask - Dockerfile
+FROM python:3.11-slim
+
+# Installer les dépendances système nécessaires
+RUN apt-get update && apt-get install -y \
+    tesseract-ocr \
+    tesseract-ocr-fra \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Créer le répertoire de l'application
+WORKDIR /app
+
+# Copier les fichiers de dépendances
+COPY requirements.txt .
+
+# Installer les dépendances Python
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copier le code source
+COPY server.py .
+COPY data/ ./data/
+
+# Créer le dossier data s'il n'existe pas
+RUN mkdir -p /app/data
+
+# Variables d'environnement
+ENV FLASK_APP=server.py
+ENV PYTHONUNBUFFERED=1
+ENV APP_MODE=production
+ENV PORT=5000
+
+# Exposer le port
+EXPOSE 5000
+
+# Démarrer le serveur
+CMD ["python", "server.py"]

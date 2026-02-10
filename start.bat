@@ -1,4 +1,5 @@
 @echo off
+cd /d "%~dp0"
 echo ============================================================
 echo   CODE BAR CRM - Demarrage
 echo ============================================================
@@ -12,8 +13,8 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM Verifier si le frontend est builde
-if not exist "horizon-ui-template\out\index.html" (
+REM Verifier si le frontend est builde (tout a la racine)
+if not exist "out\index.html" (
     echo [INFO] Le frontend n'est pas encore builde.
     echo.
     
@@ -26,19 +27,17 @@ if not exist "horizon-ui-template\out\index.html" (
     )
     
     echo [BUILD] Construction du frontend...
-    cd horizon-ui-template
     
     REM Installer les dependances si necessaire
     if not exist "node_modules" (
         echo [BUILD] Installation des dependances...
-        call yarn install
+        call npm install
     )
     
     echo [BUILD] Build du frontend (cela peut prendre quelques minutes)...
-    call yarn build
-    cd ..
+    call npm run build
     
-    if exist "horizon-ui-template\out\index.html" (
+    if exist "out\index.html" (
         echo [BUILD] Frontend builde avec succes!
     ) else (
         echo [ERREUR] Echec du build. Verifiez les erreurs ci-dessus.

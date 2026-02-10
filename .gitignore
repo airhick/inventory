@@ -1,3 +1,11 @@
+# Node / Next.js (frontend à la racine)
+node_modules/
+.next/
+out/
+.env
+.env.local
+.env*.local
+
 # Base de données
 data/
 *.db
@@ -30,23 +38,22 @@ ENV/
 Thumbs.db
 desktop.ini
 
-# Anciens fichiers (à supprimer)
-backend/
-.dockerignore
-Dockerfile
-docker-compose.yml
-nginx.conf
-CHANGELOG_DOCKER.md
-DOCKER.md
-README_DOCKER.md
-QUICK_START.md
-SETUP_FIREBASE.md
-START_BACKEND.md
-DEPLOY_VPS.md
-DEPLOY.md
-start-docker.bat
-start-docker.sh
-start-server.bat
-start-server.py
-start-server.sh
-auto.py
+# Fichiers temporaires
+*.tmp
+*.temp
+.cache/
+.parcel-cache/
+.turbo/
+
+# Fichiers de test supprimés
+# bar.py, pdf.py, Untitled déjà supprimés
+
+# NE PAS ignorer les fichiers Docker (nécessaires pour le déploiement)
+# !.dockerignore
+# !Dockerfile.backend
+# !Dockerfile.frontend
+# !docker-compose.yml
+# !docker-start.bat
+# !docker-start.sh
+# !docker-stop.bat
+# !docker-stop.sh
