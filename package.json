@@ -41,6 +41,7 @@
     "dev:next": "next dev -p 3000",
     "build": "next build",
     "start": "next start",
+    "start:prod": "concurrently -n NEXT,PY -c blue,yellow \"next start\" \"python3 server.py\"",
     "lint": "next lint",
     "predeploy": "yarn run build",
     "deploy": "gh-pages -d build",
