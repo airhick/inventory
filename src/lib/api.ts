@@ -14,7 +14,7 @@ const LOG_PREFIX = '[API]';
  */
 function sanitizeErrorMessage(message: string): string {
   if (!message) return message;
-  
+
   // Remplacer les caractères Unicode problématiques par des équivalents ASCII
   const replacements: Record<string, string> = {
     '\u2192': '->',  // →
@@ -29,12 +29,12 @@ function sanitizeErrorMessage(message: string): string {
     '\u2018': "'",   // '
     '\u2019': "'",   // '
   };
-  
+
   let sanitized = message;
   for (const [unicode, ascii] of Object.entries(replacements)) {
     sanitized = sanitized.replace(new RegExp(unicode, 'g'), ascii);
   }
-  
+
   return sanitized;
 }
 
@@ -137,7 +137,7 @@ async function apiRequest<T>(
     if (typeof endpoint !== 'string') {
       throw new Error('Endpoint doit être une chaîne');
     }
-    
+
     const url = `${API_BASE_URL}${endpoint}`;
     const method = options.method || 'GET';
     console.log(`${LOG_PREFIX} Requête:`, method, url);
@@ -156,9 +156,9 @@ async function apiRequest<T>(
       },
       ...options,
     });
-    
+
     console.log(`${LOG_PREFIX} Réponse:`, response.status, response.statusText, url);
-    
+
     if (!response.ok) {
       const errorText = await response.text();
       // Nettoyer le message d'erreur avant de l'afficher dans la console
@@ -181,7 +181,7 @@ async function apiRequest<T>(
       const cleanError = sanitizeErrorMessage(errorData.error || `Erreur HTTP: ${response.status}`);
       throw new Error(cleanError);
     }
-    
+
     const data = await response.json();
     if (isDev) {
       console.log(`${LOG_PREFIX} Données reçues:`, data);
@@ -227,9 +227,8 @@ export async function uploadImage(file: File, serialNumber?: string): Promise<st
       formData.append('serialNumber', serialNumber);
     }
 
-    // Upload direct vers Flask (pas via proxy Next.js qui a des problèmes avec FormData)
-    const flaskUrl = 'http://localhost:5000/api/upload-image';
-    const response = await fetch(flaskUrl, {
+    // Upload vers Next.js API
+    const response = await fetch('/api/upload', {
       method: 'POST',
       body: formData,
     });
@@ -411,11 +410,11 @@ export async function downloadRentalCautionDoc(rentalId: number): Promise<void> 
     const response = await fetch(url, {
       method: 'GET',
     });
-    
+
     if (!response.ok) {
       throw new Error(`Erreur HTTP: ${response.status}`);
     }
-    
+
     // Récupérer le nom du fichier depuis les headers
     const contentDisposition = response.headers.get('content-disposition');
     let filename = `caution_location_${rentalId}.pdf`;
@@ -425,7 +424,7 @@ export async function downloadRentalCautionDoc(rentalId: number): Promise<void> 
         filename = filenameMatch[1].replace(/['"]/g, '');
       }
     }
-    
+
     // Télécharger le fichier
     const blob = await response.blob();
     const downloadUrl = window.URL.createObjectURL(blob);

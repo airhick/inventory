@@ -5,13 +5,16 @@ out/
 .env.local
 .env*.local
 
+# Archive de déploiement (très volumineux)
+deployment.zip
+
 # Base de données
 data/
 *.db
 *.sqlite
 *.sqlite3
 
-# Python
+# Python (pour historique)
 __pycache__/
 *.py[cod]
 *$py.class
@@ -43,16 +46,3 @@ desktop.ini
 .cache/
 .parcel-cache/
 .turbo/
-
-# Fichiers de test supprimés
-# bar.py, pdf.py, Untitled déjà supprimés
-
-# NE PAS ignorer les fichiers Docker (nécessaires pour le déploiement)
-# !.dockerignore
-# !Dockerfile.backend
-# !Dockerfile.frontend
-# !docker-compose.yml
-# !docker-start.bat
-# !docker-start.sh
-# !docker-stop.bat
-# !docker-stop.sh

@@ -5,14 +5,6 @@ echo   CODE BAR CRM - Demarrage
 echo ============================================================
 echo.
 
-REM Verifier si Python est installe
-python --version >nul 2>&1
-if errorlevel 1 (
-    echo [ERREUR] Python n'est pas installe ou pas dans le PATH
-    pause
-    exit /b 1
-)
-
 REM Verifier si le frontend est builde (tout a la racine)
 if not exist "out\index.html" (
     echo [INFO] Le frontend n'est pas encore builde.
@@ -47,8 +39,8 @@ if not exist "out\index.html" (
 )
 
 echo.
-echo [START] Demarrage du serveur...
+echo [START] Demarrage du serveur Next.js...
 echo.
-python server.py
+call npm start
 
 pause
